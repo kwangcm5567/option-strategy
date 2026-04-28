@@ -14,10 +14,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 启动时初始化数据库
 init_db()
 
-# 挂载所有路由
 app.include_router(scanner.router)
 app.include_router(chain.router)
 app.include_router(positions.router)
@@ -31,5 +29,6 @@ def root():
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=False)

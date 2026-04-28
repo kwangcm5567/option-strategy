@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
-export const API_BASE = 'http://localhost:8000';
+const _raw = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+export const API_BASE = _raw.startsWith('http') ? _raw : `https://${_raw}`;
 
 export function useApi(endpoint, { timeout = 90_000 } = {}) {
   const [data, setData] = useState(null);
@@ -44,7 +45,6 @@ export function useApi(endpoint, { timeout = 90_000 } = {}) {
     return () => abortRef.current?.abort();
   }, [endpoint, fetchData]);
 
-  // refetch 支持传入可选的覆盖 URL（用于 force_refresh）
   const refetch = useCallback((overrideUrl) => {
     fetchData(overrideUrl || endpoint);
   }, [endpoint, fetchData]);
