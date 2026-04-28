@@ -1,8 +1,57 @@
-import { RefreshCw, AlertTriangle, Calendar } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { RefreshCw, AlertTriangle, Calendar, CheckCircle } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
-import LoadingSpinner, { ErrorBox } from '../../components/ui/LoadingSpinner';
+import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
 import { TIPS } from '../../constants/tooltips';
+
+const STEPS = [
+  { label: '连接财报数据源（FMP）', duration: 1500 },
+  { label: '获取未来 90 天财报日历', duration: 2000 },
+  { label: '批量查询 20 只股票现价', duration: 2500 },
+  { label: '计算预期波动幅度', duration: 2000 },
+  { label: '整理并排序数据', duration: 1000 },
+];
+
+function EarningsProgress() {
+  const [stepIndex, setStepIndex] = useState(0);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    const advance = (i) => {
+      if (i >= STEPS.length - 1) return;
+      timerRef.current = setTimeout(() => {
+        setStepIndex(i + 1);
+        advance(i + 1);
+      }, STEPS[i].duration);
+    };
+    advance(0);
+    return () => clearTimeout(timerRef.current);
+  }, []);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '40vh', gap: '1.5rem' }}>
+      <div className="spinner" />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', minWidth: '260px' }}>
+        {STEPS.map((step, i) => {
+          const done = i < stepIndex;
+          const active = i === stepIndex;
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', opacity: i > stepIndex ? 0.3 : 1, transition: 'opacity 0.3s' }}>
+              {done
+                ? <CheckCircle size={15} color="#10b981" />
+                : <div style={{ width: 15, height: 15, borderRadius: '50%', border: `2px solid ${active ? '#60a5fa' : 'rgba(255,255,255,0.2)'}`, flexShrink: 0, background: active ? 'rgba(96,165,250,0.15)' : 'transparent', transition: 'all 0.3s' }} />
+              }
+              <span style={{ fontSize: '0.82rem', color: done ? '#10b981' : active ? 'var(--text-primary)' : 'var(--text-secondary)', fontWeight: active ? 600 : 400, transition: 'color 0.3s' }}>
+                {step.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default function EarningsTab() {
   const { data, loading, error, refetch } = useApi('/api/earnings');
@@ -40,7 +89,7 @@ export default function EarningsTab() {
       </div>
 
       {loading ? (
-        <LoadingSpinner message="正在获取财报日历…" />
+        <EarningsProgress />
       ) : error ? (
         <ErrorBox message={error} />
       ) : (
