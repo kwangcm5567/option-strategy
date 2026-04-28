@@ -53,6 +53,7 @@ export default function StrategyTab() {
   };
 
   const isSell = strategy.startsWith('sell_');
+  const isCall = strategy.includes('call');
 
   return (
     <div style={{ animation: 'fadeInUp 0.4s ease-out' }}>
@@ -144,36 +145,80 @@ export default function StrategyTab() {
                     </tr>
                   </thead>
                   <tbody>
-                    {options.map((opt, i) => (
-                      <tr
-                        key={i}
-                        onClick={() => setSelected({ ...opt, expirationDate, dte, strategy, currentPrice: chainData.currentPrice, symbol: chainData.symbol })}
-                        style={{
-                          borderBottom: '1px solid rgba(255,255,255,0.04)',
-                          cursor: 'pointer',
-                          background: selected?.strike === opt.strike && selected?.expirationDate === expirationDate ? 'rgba(59,130,246,0.12)' : 'transparent',
-                          transition: 'background 0.15s',
-                        }}
-                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
-                        onMouseLeave={e => e.currentTarget.style.background = selected?.strike === opt.strike ? 'rgba(59,130,246,0.12)' : 'transparent'}
-                      >
-                        {[
-                          { val: `$${opt.strike.toFixed(2)}`, color: opt.inTheMoney ? '#f59e0b' : 'var(--text-primary)' },
-                          { val: `$${opt.premium.toFixed(2)}`, color: '#60a5fa' },
-                          { val: `$${opt.bid}/$${opt.ask}`, color: 'var(--text-secondary)' },
-                          { val: `${opt.distancePct?.toFixed(1)}%`, color: (opt.distancePct || 0) >= 5 ? '#10b981' : '#f59e0b' },
-                          { val: `$${opt.breakEven?.toFixed(2)}` },
-                          { val: opt.delta?.toFixed(3) ?? 'N/A' },
-                          { val: opt.thetaPerDay != null ? (isSell ? `+$${Math.abs(opt.thetaPerDay).toFixed(2)}` : `-$${Math.abs(opt.thetaPerDay).toFixed(2)}`) : 'N/A', color: isSell ? '#10b981' : '#ef4444' },
-                          { val: `${opt.impliedVolatility}%` },
-                          { val: `${opt.ivRank}%`, color: opt.ivRank >= 60 ? '#ef4444' : opt.ivRank >= 30 ? '#f59e0b' : '#10b981' },
-                          { val: opt.popTheoretical != null ? `${opt.popTheoretical}%` : 'N/A', color: (opt.popTheoretical || 0) >= 70 ? '#10b981' : '#f59e0b' },
-                          { val: opt.volume.toLocaleString(), color: 'var(--text-secondary)' },
-                        ].map(({ val, color }, ci) => (
-                          <td key={ci} style={{ padding: '0.45rem 0.6rem', textAlign: 'right', color: color || 'var(--text-primary)', whiteSpace: 'nowrap' }}>{val}</td>
-                        ))}
-                      </tr>
-                    ))}
+                    {(() => {
+                      // buy_call 只显示合理区间（排除 deep ITM 和极 OTM）
+                      let displayOptions = [...options];
+                      if (!isSell && isCall) {
+                        displayOptions = displayOptions.filter(opt =>
+                          opt.strike >= chainData.currentPrice * 0.92 &&
+                          opt.strike <= chainData.currentPrice * 1.20
+                        );
+                      }
+
+                      // put 从高到低排（ATM 在上），call 从低到高排（ATM 在上）
+                      displayOptions.sort((a, b) =>
+                        isCall ? a.strike - b.strike : b.strike - a.strike
+                      );
+
+                      // 在当前价格处插入分割线
+                      const rows = [];
+                      let dividerAdded = false;
+                      for (const opt of displayOptions) {
+                        if (!dividerAdded) {
+                          const crossed = isCall
+                            ? opt.strike > chainData.currentPrice
+                            : opt.strike < chainData.currentPrice;
+                          if (crossed) {
+                            rows.push({ isDivider: true });
+                            dividerAdded = true;
+                          }
+                        }
+                        rows.push(opt);
+                      }
+                      if (!dividerAdded) rows.push({ isDivider: true });
+
+                      return rows.map((opt, i) => {
+                        if (opt.isDivider) {
+                          return (
+                            <tr key="divider">
+                              <td colSpan={11} style={{ padding: '0.3rem 0.6rem', textAlign: 'center', fontSize: '0.75rem', color: '#60a5fa', background: 'rgba(59,130,246,0.08)', fontWeight: 700, borderTop: '1px solid rgba(96,165,250,0.4)', borderBottom: '1px solid rgba(96,165,250,0.4)' }}>
+                                ── 当前价 ${chainData.currentPrice.toFixed(2)} ──
+                              </td>
+                            </tr>
+                          );
+                        }
+                        return (
+                          <tr
+                            key={i}
+                            onClick={() => setSelected({ ...opt, expirationDate, dte, strategy, currentPrice: chainData.currentPrice, symbol: chainData.symbol })}
+                            style={{
+                              borderBottom: '1px solid rgba(255,255,255,0.04)',
+                              cursor: 'pointer',
+                              background: selected?.strike === opt.strike && selected?.expirationDate === expirationDate ? 'rgba(59,130,246,0.12)' : 'transparent',
+                              transition: 'background 0.15s',
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
+                            onMouseLeave={e => e.currentTarget.style.background = selected?.strike === opt.strike ? 'rgba(59,130,246,0.12)' : 'transparent'}
+                          >
+                            {[
+                              { val: `$${opt.strike.toFixed(2)}`, color: opt.inTheMoney ? '#f59e0b' : 'var(--text-primary)' },
+                              { val: `$${opt.premium.toFixed(2)}`, color: '#60a5fa' },
+                              { val: `$${opt.bid}/$${opt.ask}`, color: 'var(--text-secondary)' },
+                              { val: `${opt.distancePct?.toFixed(1)}%`, color: (opt.distancePct || 0) >= 5 ? '#10b981' : '#f59e0b' },
+                              { val: `$${opt.breakEven?.toFixed(2)}` },
+                              { val: opt.delta?.toFixed(3) ?? 'N/A' },
+                              { val: opt.thetaPerDay != null ? (isSell ? `+$${Math.abs(opt.thetaPerDay).toFixed(2)}` : `-$${Math.abs(opt.thetaPerDay).toFixed(2)}`) : 'N/A', color: isSell ? '#10b981' : '#ef4444' },
+                              { val: `${opt.impliedVolatility}%` },
+                              { val: `${opt.ivRank}%`, color: opt.ivRank >= 60 ? '#ef4444' : opt.ivRank >= 30 ? '#f59e0b' : '#10b981' },
+                              { val: opt.popTheoretical != null ? `${opt.popTheoretical}%` : 'N/A', color: (opt.popTheoretical || 0) >= 70 ? '#10b981' : '#f59e0b' },
+                              { val: opt.volume.toLocaleString(), color: 'var(--text-secondary)' },
+                            ].map(({ val, color }, ci) => (
+                              <td key={ci} style={{ padding: '0.45rem 0.6rem', textAlign: 'right', color: color || 'var(--text-primary)', whiteSpace: 'nowrap' }}>{val}</td>
+                            ))}
+                          </tr>
+                        );
+                      });
+                    })()}
                   </tbody>
                 </table>
               </div>
