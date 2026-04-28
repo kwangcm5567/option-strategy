@@ -1,7 +1,7 @@
 """
 /api/earnings  —  财报日历 + 预期波动幅度
-主数据源：Financial Modeling Prep (FMP)
-Fallback：yfinance earnings_dates
+主数据源：Financial Modeling Prep (FMP)  — 2 次 API call 搞定全部 20 只股票
+Fallback：yfinance earnings_dates（仅在未配置 FMP_API_KEY 时使用）
 """
 import math
 import os
@@ -21,7 +21,7 @@ FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 
 
 def _fetch_fmp_earnings() -> dict[str, str]:
-    """从 FMP 拉取未来 90 天财报日历，返回 {symbol: date_str}。"""
+    """从 FMP 拉取未来 90 天财报日历，返回 {symbol: date_str}。1 次 call 覆盖所有标的。"""
     if not FMP_API_KEY:
         return {}
     try:
@@ -45,6 +45,38 @@ def _fetch_fmp_earnings() -> dict[str, str]:
         return result
     except Exception:
         return {}
+
+
+def _fetch_fmp_quotes(symbols: list[str]) -> dict[str, dict]:
+    """批量获取行情（price / yearHigh / yearLow），1 次 call 覆盖所有标的。"""
+    if not FMP_API_KEY:
+        return {}
+    try:
+        joined = ",".join(symbols)
+        url = f"https://financialmodelingprep.com/api/v3/quote/{joined}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            return {}
+        result: dict[str, dict] = {}
+        for item in resp.json():
+            sym = item.get("symbol", "").upper()
+            price = item.get("price")
+            if sym and price:
+                result[sym] = {
+                    "price": float(price),
+                    "yearHigh": float(item.get("yearHigh") or 0),
+                    "yearLow": float(item.get("yearLow") or 0),
+                }
+        return result
+    except Exception:
+        return {}
+
+
+def _parkinson_hv(year_high: float, year_low: float) -> float:
+    """Parkinson 高低价估算年化历史波动率。"""
+    if year_high > 0 and year_low > 0 and year_high > year_low:
+        return math.log(year_high / year_low) / math.sqrt(4 * math.log(2))
+    return 0.25  # 兜底：25% 年化波动率
 
 
 def _get_next_earnings_yf(ticker) -> datetime | None:
@@ -73,19 +105,22 @@ def get_earnings(force_refresh: bool = False):
     if not force_refresh and cached:
         return {"data": cached, "cached": True}
 
-    fmp_map = _fetch_fmp_earnings()
+    fmp_dates = _fetch_fmp_earnings()
+    fmp_quotes = _fetch_fmp_quotes(TICKERS)
+
     results = []
     today = datetime.now()
 
     for symbol in TICKERS:
         try:
-            ticker = yf.Ticker(symbol)
-
-            if symbol in fmp_map:
-                earnings_date_str = fmp_map[symbol]
+            # ── 财报日期 ──
+            if symbol in fmp_dates:
+                earnings_date_str = fmp_dates[symbol]
                 next_earnings_naive = datetime.strptime(earnings_date_str, "%Y-%m-%d")
             else:
-                next_dt = _get_next_earnings_yf(ticker)
+                # FMP 没有时才走 yfinance
+                yf_ticker = yf.Ticker(symbol)
+                next_dt = _get_next_earnings_yf(yf_ticker)
                 if next_dt is None:
                     continue
                 next_earnings_naive = next_dt.replace(tzinfo=None)
@@ -93,39 +128,27 @@ def get_earnings(force_refresh: bool = False):
 
             days_to_earnings = (next_earnings_naive - today).days
 
-            history = ticker.history(period="1y")
-            if history.empty:
-                continue
-            current_price = float(history["Close"].iloc[-1])
+            # ── 当前价格 ──
+            quote = fmp_quotes.get(symbol)
+            if quote:
+                current_price = quote["price"]
+                hv = _parkinson_hv(quote["yearHigh"], quote["yearLow"])
+            else:
+                # FMP 没有时才走 yfinance
+                try:
+                    hist = yf.Ticker(symbol).history(period="5d")
+                    if hist.empty:
+                        continue
+                    current_price = float(hist["Close"].iloc[-1])
+                    hv = 0.25
+                except Exception:
+                    continue
 
-            expected_move_pct = None
-            expected_move_dollar = None
-            try:
-                exp_dates = ticker.options
-                for date_str in exp_dates:
-                    dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
-                    if 5 <= dte <= 45:
-                        chain = ticker.option_chain(date_str)
-                        atm = chain.puts[
-                            (chain.puts["strike"] >= current_price * 0.97) &
-                            (chain.puts["strike"] <= current_price * 1.03)
-                        ]
-                        if not atm.empty:
-                            iv = float(atm["impliedVolatility"].median())
-                            if iv > 0:
-                                move = current_price * iv * math.sqrt(max(dte, 1) / 365)
-                                expected_move_pct = round(move / current_price * 100, 1)
-                                expected_move_dollar = round(move, 2)
-                            break
-            except Exception:
-                pass
-
-            if expected_move_pct is None:
-                daily_ret = history["Close"].pct_change().dropna()
-                hv = float(daily_ret.std() * math.sqrt(252))
-                move = current_price * hv * math.sqrt(max(abs(days_to_earnings), 1) / 365)
-                expected_move_pct = round(move / current_price * 100, 1)
-                expected_move_dollar = round(move, 2)
+            # ── 预期波动幅度（基于年化 HV + DTE） ──
+            dte = max(abs(days_to_earnings), 1)
+            move = current_price * hv * math.sqrt(dte / 365)
+            expected_move_pct = round(move / current_price * 100, 1)
+            expected_move_dollar = round(move, 2)
 
             results.append({
                 "symbol": symbol,
