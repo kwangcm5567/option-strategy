@@ -4,9 +4,11 @@
 Fallback：yfinance earnings_dates
 """
 import math
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 
 import pandas as pd
+import requests
 import yfinance as yf
 from fastapi import APIRouter
 
@@ -65,30 +67,6 @@ def _get_next_earnings_yf(ticker) -> datetime | None:
     return None
 
 
-def _get_next_earnings(ticker) -> datetime | None:
-    """尝试多种方式获取下一个财报日期。"""
-    # 方法 1: ticker.calendar
-    try:
-        cal = ticker.calendar
-        if cal and "Earnings Date" in cal and cal["Earnings Date"]:
-            return cal["Earnings Date"][0]
-    except Exception:
-        pass
-
-    # 方法 2: ticker.earnings_dates（yfinance 0.2.x 新接口）
-    try:
-        eds = ticker.earnings_dates
-        if eds is not None and not eds.empty:
-            now_tz = pd.Timestamp.now(tz=eds.index.tz)
-            future = eds[eds.index > now_tz]
-            if not future.empty:
-                return future.index.min().to_pydatetime()
-    except Exception:
-        pass
-
-    return None
-
-
 @router.get("/api/earnings")
 def get_earnings(force_refresh: bool = False):
     cached = cache_svc.get("earnings", ttl_seconds=7200)
@@ -102,13 +80,17 @@ def get_earnings(force_refresh: bool = False):
     for symbol in TICKERS:
         try:
             ticker = yf.Ticker(symbol)
-            next_earnings = _get_next_earnings(ticker)
 
-            if next_earnings is None:
-                continue
+            if symbol in fmp_map:
+                earnings_date_str = fmp_map[symbol]
+                next_earnings_naive = datetime.strptime(earnings_date_str, "%Y-%m-%d")
+            else:
+                next_dt = _get_next_earnings_yf(ticker)
+                if next_dt is None:
+                    continue
+                next_earnings_naive = next_dt.replace(tzinfo=None)
+                earnings_date_str = next_earnings_naive.strftime("%Y-%m-%d")
 
-            next_earnings_naive = next_earnings.replace(tzinfo=None) if hasattr(next_earnings, 'tzinfo') else next_earnings
-            earnings_date_str = next_earnings_naive.strftime("%Y-%m-%d")
             days_to_earnings = (next_earnings_naive - today).days
 
             history = ticker.history(period="1y")
