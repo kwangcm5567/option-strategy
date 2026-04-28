@@ -2,7 +2,9 @@
 /api/earnings  —  财报日历 + 预期波动幅度
 """
 import math
+from datetime import datetime
 
+import pandas as pd
 import yfinance as yf
 from fastapi import APIRouter
 
@@ -12,6 +14,30 @@ from services.scanner import TICKERS
 router = APIRouter()
 
 
+def _get_next_earnings(ticker) -> datetime | None:
+    """尝试多种方式获取下一个财报日期。"""
+    # 方法 1: ticker.calendar
+    try:
+        cal = ticker.calendar
+        if cal and "Earnings Date" in cal and cal["Earnings Date"]:
+            return cal["Earnings Date"][0]
+    except Exception:
+        pass
+
+    # 方法 2: ticker.earnings_dates（yfinance 0.2.x 新接口）
+    try:
+        eds = ticker.earnings_dates
+        if eds is not None and not eds.empty:
+            now_tz = pd.Timestamp.now(tz=eds.index.tz)
+            future = eds[eds.index > now_tz]
+            if not future.empty:
+                return future.index.min().to_pydatetime()
+    except Exception:
+        pass
+
+    return None
+
+
 @router.get("/api/earnings")
 def get_earnings(force_refresh: bool = False):
     cached = cache_svc.get("earnings", ttl_seconds=7200)
@@ -19,29 +45,25 @@ def get_earnings(force_refresh: bool = False):
         return {"data": cached, "cached": True}
 
     results = []
+    today = datetime.now()
+
     for symbol in TICKERS:
         try:
             ticker = yf.Ticker(symbol)
-            cal = ticker.calendar
+            next_earnings = _get_next_earnings(ticker)
 
-            if not cal or "Earnings Date" not in cal or not cal["Earnings Date"]:
+            if next_earnings is None:
                 continue
 
-            next_earnings = cal["Earnings Date"][0]
-            earnings_date_str = next_earnings.strftime("%Y-%m-%d")
+            next_earnings_naive = next_earnings.replace(tzinfo=None) if hasattr(next_earnings, 'tzinfo') else next_earnings
+            earnings_date_str = next_earnings_naive.strftime("%Y-%m-%d")
+            days_to_earnings = (next_earnings_naive - today).days
 
-            # 预期波动幅度（用当前 ATM IV 估算）
             history = ticker.history(period="1y")
             if history.empty:
                 continue
             current_price = float(history["Close"].iloc[-1])
 
-            # 到财报还有多少天
-            from datetime import datetime
-            today = datetime.now()
-            days_to_earnings = (next_earnings.replace(tzinfo=None) - today).days
-
-            # 尝试获取接近财报日的期权 IV
             expected_move_pct = None
             expected_move_dollar = None
             try:
@@ -64,11 +86,10 @@ def get_earnings(force_refresh: bool = False):
             except Exception:
                 pass
 
-            # Fallback：用历史波动率
             if expected_move_pct is None:
                 daily_ret = history["Close"].pct_change().dropna()
                 hv = float(daily_ret.std() * math.sqrt(252))
-                move = current_price * hv * math.sqrt(max(days_to_earnings, 1) / 365)
+                move = current_price * hv * math.sqrt(max(abs(days_to_earnings), 1) / 365)
                 expected_move_pct = round(move / current_price * 100, 1)
                 expected_move_dollar = round(move, 2)
 
