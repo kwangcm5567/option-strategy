@@ -13,30 +13,58 @@ from services.greeks import calc_black_scholes, calc_expected_move, calc_iv_rank
 router = APIRouter()
 
 
+def _safe_float(val, default=0.0) -> float:
+    try:
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            return default
+        v = float(val)
+        return default if math.isnan(v) else v
+    except Exception:
+        return default
+
+
+def _safe_int(val, default=0) -> int:
+    try:
+        if val is None:
+            return default
+        f = float(val)
+        return default if math.isnan(f) else int(f)
+    except Exception:
+        return default
+
+
 @router.get("/api/option-chain/{symbol}")
 def get_option_chain(
     symbol: str,
     strategy: str = Query(default="sell_put"),
 ):
-    ticker = yf.Ticker(symbol.upper())
-    history = ticker.history(period="1y")
+    try:
+        ticker = yf.Ticker(symbol.upper())
+        history = ticker.history(period="1y")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"获取 {symbol} 数据失败: {e}")
 
     if history.empty:
         raise HTTPException(status_code=404, detail=f"找不到 {symbol} 的历史数据")
 
-    current_price = float(history["Close"].iloc[-1])
+    current_price = _safe_float(history["Close"].iloc[-1])
     daily_ret = history["Close"].pct_change().dropna()
-    hist_vol = float(daily_ret.std() * math.sqrt(252))
-    sma50 = float(history["Close"].tail(50).mean())
+    hist_vol_raw = daily_ret.std() * math.sqrt(252)
+    hist_vol = _safe_float(hist_vol_raw, default=0.0)
+    sma50 = _safe_float(history["Close"].tail(50).mean())
 
-    exp_dates = ticker.options
+    try:
+        exp_dates = ticker.options or []
+    except Exception:
+        exp_dates = []
+
     today = datetime.now()
     bs_type = "put" if "put" in strategy else "call"
     is_put = bs_type == "put"
 
     chain_by_date = []
 
-    for date_str in exp_dates[:8]:   # 最多展示 8 个到期日
+    for date_str in exp_dates[:8]:
         dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
         if dte <= 0:
             continue
@@ -49,51 +77,54 @@ def get_option_chain(
 
         options = []
         for _, row in rows.iterrows():
-            strike = float(row["strike"])
-            premium = float(row["lastPrice"]) if not pd.isna(row["lastPrice"]) else 0.0
-            bid = float(row.get("bid", 0) or 0)
-            ask = float(row.get("ask", 0) or 0)
-            iv = float(row["impliedVolatility"]) if not pd.isna(row["impliedVolatility"]) else 0.0
-            volume = int(row.get("volume", 0) or 0)
-            oi = int(row.get("openInterest", 0) or 0)
+            try:
+                strike  = _safe_float(row.get("strike"))
+                premium = _safe_float(row.get("lastPrice"))
+                bid     = _safe_float(row.get("bid"))
+                ask     = _safe_float(row.get("ask"))
+                iv      = _safe_float(row.get("impliedVolatility"))
+                volume  = _safe_int(row.get("volume"))
+                oi      = _safe_int(row.get("openInterest"))
 
-            if premium <= 0 or iv <= 0:
+                if premium <= 0 or iv <= 0:
+                    continue
+
+                greeks   = calc_black_scholes(current_price, strike, dte, iv, bs_type)
+                exp_move = calc_expected_move(current_price, iv, dte)
+                iv_rank  = calc_iv_rank(history, iv)
+
+                distance_pct = (
+                    round((current_price - strike) / current_price * 100, 1) if is_put
+                    else round((strike - current_price) / current_price * 100, 1)
+                )
+                break_even = (
+                    round(strike - premium, 2) if strategy in ("sell_put", "buy_put")
+                    else round(strike + premium, 2)
+                )
+
+                options.append({
+                    "strike": strike,
+                    "premium": round(premium, 2),
+                    "bid": round(bid, 2),
+                    "ask": round(ask, 2),
+                    "volume": volume,
+                    "openInterest": oi,
+                    "impliedVolatility": round(iv * 100, 1),
+                    "ivRank": iv_rank,
+                    "distancePct": distance_pct,
+                    "breakEven": break_even,
+                    "expectedMoveUpper": exp_move["upper"],
+                    "expectedMoveLower": exp_move["lower"],
+                    "expectedMovePct": exp_move["move_pct"],
+                    "delta": greeks["delta"] if greeks else None,
+                    "gamma": greeks["gamma"] if greeks else None,
+                    "thetaPerDay": round(greeks["theta_day"] * 100, 2) if greeks else None,
+                    "vegaPerPct": round(greeks["vega_1pct"] * 100, 2) if greeks else None,
+                    "popTheoretical": greeks["pop"] if greeks else None,
+                    "inTheMoney": bool(row.get("inTheMoney", False)),
+                })
+            except Exception:
                 continue
-
-            greeks = calc_black_scholes(current_price, strike, dte, iv, bs_type)
-            exp_move = calc_expected_move(current_price, iv, dte)
-            iv_rank = calc_iv_rank(history, iv)
-
-            distance_pct = (
-                round((current_price - strike) / current_price * 100, 1) if is_put
-                else round((strike - current_price) / current_price * 100, 1)
-            )
-            break_even = (
-                round(strike - premium, 2) if strategy in ("sell_put", "buy_put")
-                else round(strike + premium, 2)
-            )
-
-            options.append({
-                "strike": strike,
-                "premium": round(premium, 2),
-                "bid": round(bid, 2),
-                "ask": round(ask, 2),
-                "volume": volume,
-                "openInterest": oi,
-                "impliedVolatility": round(iv * 100, 1),
-                "ivRank": iv_rank,
-                "distancePct": distance_pct,
-                "breakEven": break_even,
-                "expectedMoveUpper": exp_move["upper"],
-                "expectedMoveLower": exp_move["lower"],
-                "expectedMovePct": exp_move["move_pct"],
-                "delta": greeks["delta"] if greeks else None,
-                "gamma": greeks["gamma"] if greeks else None,
-                "thetaPerDay": round(greeks["theta_day"] * 100, 2) if greeks else None,
-                "vegaPerPct": round(greeks["vega_1pct"] * 100, 2) if greeks else None,
-                "popTheoretical": greeks["pop"] if greeks else None,
-                "inTheMoney": bool(row.get("inTheMoney", False)),
-            })
 
         chain_by_date.append({
             "expirationDate": date_str,
