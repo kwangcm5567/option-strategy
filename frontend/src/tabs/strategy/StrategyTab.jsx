@@ -132,15 +132,16 @@ export default function StrategyTab() {
           {/* 期权链 */}
           {chainData.chain.map(({ expirationDate, dte, options }) => (
             <div key={expirationDate} style={{ marginBottom: '1.5rem' }}>
-              <h3 style={{ fontSize: '0.92rem', fontWeight: 700, marginBottom: '0.6rem', color: 'var(--text-secondary)' }}>
-                到期日：{expirationDate}（{dte} 天后）
+              <h3 style={{ fontSize: '0.92rem', fontWeight: 700, marginBottom: '0.6rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem' }}>
+                <span>到期日：{expirationDate}（{dte} 天后）</span>
+                <span style={{ color: '#60a5fa', fontSize: '0.82rem', fontWeight: 600 }}>现价 ${chainData.currentPrice.toFixed(2)}</span>
               </h3>
-              <div style={{ overflowX: 'auto' }}>
+              <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-secondary)' }}>
                       {['行权价', '权利金', '买/卖价', '距离%', '平衡点', 'Delta ⓘ', 'Theta/天 ⓘ', 'IV%', 'IV Rank ⓘ', '理论 PoP ⓘ', '成交量'].map((h, i) => (
-                        <th key={i} style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
+                        <th key={i} style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontWeight: 500, whiteSpace: 'nowrap', position: 'sticky', top: 0, background: '#0f172a', zIndex: 1 }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
