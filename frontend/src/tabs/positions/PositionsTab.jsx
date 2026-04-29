@@ -1,9 +1,53 @@
 import { useState, useEffect } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Cloud, HardDrive } from 'lucide-react';
 import Tooltip from '../../components/ui/Tooltip';
 import { TIPS } from '../../constants/tooltips';
 
-const STORAGE_KEY = 'option_positions_v1';
+// ── Supabase 配置（在 Vercel 加 VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY）──
+const SB_URL = import.meta.env.VITE_SUPABASE_URL ?? '';
+const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
+const USE_CLOUD = !!(SB_URL && SB_KEY);
+
+const sbHeaders = () => ({
+  apikey: SB_KEY,
+  Authorization: `Bearer ${SB_KEY}`,
+  'Content-Type': 'application/json',
+});
+
+async function cloudLoad() {
+  const res = await fetch(
+    `${SB_URL}/rest/v1/positions?select=*&order=expiration_date.asc`,
+    { headers: sbHeaders() }
+  );
+  if (!res.ok) throw new Error(`Supabase ${res.status}`);
+  return res.json();
+}
+
+async function cloudAdd(pos) {
+  const res = await fetch(`${SB_URL}/rest/v1/positions`, {
+    method: 'POST',
+    headers: { ...sbHeaders(), Prefer: 'return=representation' },
+    body: JSON.stringify(pos),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}`);
+  const rows = await res.json();
+  return rows[0];
+}
+
+async function cloudDelete(id) {
+  const res = await fetch(`${SB_URL}/rest/v1/positions?id=eq.${id}`, {
+    method: 'DELETE',
+    headers: sbHeaders(),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}`);
+}
+
+// ── localStorage fallback ──
+const LS_KEY = 'option_positions_v1';
+const lsLoad = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) ?? '[]'); } catch { return []; } };
+const lsSave = (data) => localStorage.setItem(LS_KEY, JSON.stringify(data));
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 const STRATEGIES = [
   { value: 'sell_put',  label: '卖出 Put'  },
@@ -13,7 +57,6 @@ const STRATEGIES = [
 ];
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
-
 const emptyForm = {
   symbol: '', strategy: 'sell_put', strike: '', premium: '',
   quantity: 1, expiration_date: '', open_date: todayStr(), notes: '',
@@ -26,33 +69,29 @@ function DaysUntil({ dateStr }) {
   return <span style={{ color: '#10b981' }}>{days} 天后到期</span>;
 }
 
-function loadPositions() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function savePositions(positions) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(positions));
-}
-
 export default function PositionsTab() {
-  const [positions, setPositions] = useState(() => loadPositions());
+  const [positions, setPositions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
 
-  // 每次 positions 变化时同步到 localStorage
   useEffect(() => {
-    savePositions(positions);
-  }, [positions]);
+    (async () => {
+      try {
+        const data = USE_CLOUD ? await cloudLoad() : lsLoad();
+        setPositions(data);
+      } catch (e) {
+        setError('加载失败：' + e.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    const newPos = {
-      id: Date.now(),
+    const posData = {
       symbol: form.symbol.toUpperCase(),
       strategy: form.strategy,
       strike: parseFloat(form.strike),
@@ -62,16 +101,44 @@ export default function PositionsTab() {
       open_date: form.open_date,
       notes: form.notes,
     };
-    setPositions(prev => [...prev, newPos].sort((a, b) =>
-      a.expiration_date.localeCompare(b.expiration_date)
-    ));
-    setForm(emptyForm);
-    setShowForm(false);
+    try {
+      if (USE_CLOUD) {
+        const saved = await cloudAdd(posData);
+        setPositions(prev =>
+          [...prev, saved].sort((a, b) => a.expiration_date.localeCompare(b.expiration_date))
+        );
+      } else {
+        const newPos = { ...posData, id: Date.now() };
+        setPositions(prev => {
+          const updated = [...prev, newPos].sort((a, b) =>
+            a.expiration_date.localeCompare(b.expiration_date)
+          );
+          lsSave(updated);
+          return updated;
+        });
+      }
+      setForm(emptyForm);
+      setShowForm(false);
+      setError(null);
+    } catch (e) {
+      setError('保存失败：' + e.message);
+    }
   };
 
-  const handleDelete = (id) => {
+  const handleDelete = async (id) => {
     if (!confirm('确定要删除这条持仓记录吗？')) return;
-    setPositions(prev => prev.filter(p => p.id !== id));
+    try {
+      if (USE_CLOUD) {
+        await cloudDelete(id);
+      } else {
+        const updated = positions.filter(p => p.id !== id);
+        lsSave(updated);
+      }
+      setPositions(prev => prev.filter(p => p.id !== id));
+      setError(null);
+    } catch (e) {
+      setError('删除失败：' + e.message);
+    }
   };
 
   const inputStyle = {
@@ -85,7 +152,12 @@ export default function PositionsTab() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
         <div>
           <h2 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '0.2rem' }}>持仓追踪</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>数据保存在本地浏览器，不受服务器重启影响。</p>
+          <p style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+            {USE_CLOUD
+              ? <><Cloud size={13} color="#10b981" /> 数据同步至云端（跨设备可用）</>
+              : <><HardDrive size={13} color="#f59e0b" /> 数据仅存在本设备浏览器 · 配置 Supabase 可跨设备同步</>
+            }
+          </p>
         </div>
         <button
           onClick={() => setShowForm(v => !v)}
@@ -98,6 +170,37 @@ export default function PositionsTab() {
           <Plus size={15} /> 新增持仓
         </button>
       </div>
+
+      {/* 未配置云端时的提示 */}
+      {!USE_CLOUD && (
+        <div className="glass-panel" style={{ padding: '0.75rem 1rem', marginBottom: '1rem', borderLeft: '4px solid #f59e0b', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+          💡 想在所有设备上同步持仓？免费注册 <strong style={{ color: '#f59e0b' }}>supabase.com</strong>，按下方步骤配置即可。
+          <details style={{ marginTop: '0.5rem' }}>
+            <summary style={{ cursor: 'pointer', color: '#60a5fa' }}>查看配置步骤 ▸</summary>
+            <ol style={{ margin: '0.5rem 0 0 1rem', lineHeight: '1.9' }}>
+              <li>supabase.com → 注册 → New Project</li>
+              <li>左栏 SQL Editor → 执行：<br />
+                <code style={{ fontSize: '0.75rem', background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px', display: 'inline-block', marginTop: '2px' }}>
+                  CREATE TABLE positions (id BIGSERIAL PRIMARY KEY, symbol TEXT, strategy TEXT, strike NUMERIC, premium NUMERIC, quantity INT DEFAULT 1, expiration_date TEXT, open_date TEXT, notes TEXT DEFAULT '');
+                  ALTER TABLE positions ENABLE ROW LEVEL SECURITY;
+                  CREATE POLICY "all" ON positions FOR ALL USING (true) WITH CHECK (true);
+                </code>
+              </li>
+              <li>Settings → API → 复制 Project URL 和 anon key</li>
+              <li>Vercel → Settings → Environment Variables → 添加：<br />
+                <code style={{ fontSize: '0.75rem' }}>VITE_SUPABASE_URL</code> 和 <code style={{ fontSize: '0.75rem' }}>VITE_SUPABASE_ANON_KEY</code>
+              </li>
+              <li>Vercel Redeploy</li>
+            </ol>
+          </details>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ padding: '0.75rem 1rem', marginBottom: '1rem', borderLeft: '4px solid #ef4444', background: 'rgba(239,68,68,0.08)', borderRadius: '8px', fontSize: '0.85rem', color: '#fca5a5' }}>
+          ⚠️ {error}
+        </div>
+      )}
 
       {/* 新增表单 */}
       {showForm && (
@@ -149,7 +252,9 @@ export default function PositionsTab() {
       )}
 
       {/* 持仓列表 */}
-      {positions.length === 0 ? (
+      {loading ? (
+        <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>加载中…</div>
+      ) : positions.length === 0 ? (
         <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
           <p style={{ color: 'var(--text-secondary)' }}>还没有任何持仓记录，点击「新增持仓」开始追踪。</p>
         </div>
@@ -172,8 +277,8 @@ export default function PositionsTab() {
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{stratLabel}</div>
                   </div>
                   {[
-                    { label: '行权价', value: `$${pos.strike.toFixed(2)}` },
-                    { label: '开仓权利金', value: `$${pos.premium.toFixed(2)}/股` },
+                    { label: '行权价', value: `$${Number(pos.strike).toFixed(2)}` },
+                    { label: '开仓权利金', value: `$${Number(pos.premium).toFixed(2)}/股` },
                     { label: '合约数', value: `${pos.quantity} 张` },
                     { label: '盈亏平衡', value: `$${breakEven.toFixed(2)}`, tip: TIPS.breakEven },
                     { label: '最大获利', value: `$${maxProfit}`, color: '#10b981', tip: TIPS.maxProfit },
@@ -192,9 +297,7 @@ export default function PositionsTab() {
                     <div style={{ fontSize: '0.85rem' }}><DaysUntil dateStr={pos.expiration_date} /></div>
                   </div>
                   {pos.notes ? (
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxWidth: '200px' }}>
-                      {pos.notes}
-                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxWidth: '200px' }}>{pos.notes}</div>
                   ) : null}
                 </div>
                 <button
