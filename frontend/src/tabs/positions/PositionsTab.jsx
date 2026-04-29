@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { apiFetch } from '../../hooks/useApi';
-import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
 import { TIPS } from '../../constants/tooltips';
+
+const STORAGE_KEY = 'option_positions_v1';
 
 const STRATEGIES = [
   { value: 'sell_put',  label: '卖出 Put'  },
@@ -12,11 +12,11 @@ const STRATEGIES = [
   { value: 'buy_put',   label: '买入 Put'  },
 ];
 
-const today = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const emptyForm = {
   symbol: '', strategy: 'sell_put', strike: '', premium: '',
-  quantity: 1, expiration_date: '', open_date: today(), notes: '',
+  quantity: 1, expiration_date: '', open_date: todayStr(), notes: '',
 };
 
 function DaysUntil({ dateStr }) {
@@ -26,52 +26,52 @@ function DaysUntil({ dateStr }) {
   return <span style={{ color: '#10b981' }}>{days} 天后到期</span>;
 }
 
+function loadPositions() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePositions(positions) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(positions));
+}
+
 export default function PositionsTab() {
-  const [positions, setPositions] = useState([]);
-  const [error, setError] = useState(null);
+  const [positions, setPositions] = useState(() => loadPositions());
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
-  const [submitting, setSubmitting] = useState(false);
 
-  const load = async () => {
-    try {
-      const res = await apiFetch('GET', '/api/positions');
-      setPositions(res.data || []);
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  // 每次 positions 变化时同步到 localStorage
+  useEffect(() => {
+    savePositions(positions);
+  }, [positions]);
 
-  useEffect(() => { load(); }, []);
-
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    setSubmitting(true);
-    try {
-      await apiFetch('POST', '/api/positions', {
-        ...form,
-        strike: parseFloat(form.strike),
-        premium: parseFloat(form.premium),
-        quantity: parseInt(form.quantity),
-      });
-      setForm(emptyForm);
-      setShowForm(false);
-      await load();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSubmitting(false);
-    }
+    const newPos = {
+      id: Date.now(),
+      symbol: form.symbol.toUpperCase(),
+      strategy: form.strategy,
+      strike: parseFloat(form.strike),
+      premium: parseFloat(form.premium),
+      quantity: parseInt(form.quantity),
+      expiration_date: form.expiration_date,
+      open_date: form.open_date,
+      notes: form.notes,
+    };
+    setPositions(prev => [...prev, newPos].sort((a, b) =>
+      a.expiration_date.localeCompare(b.expiration_date)
+    ));
+    setForm(emptyForm);
+    setShowForm(false);
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = (id) => {
     if (!confirm('确定要删除这条持仓记录吗？')) return;
-    try {
-      await apiFetch('DELETE', `/api/positions/${id}`);
-      await load();
-    } catch (e) {
-      setError(e.message);
-    }
+    setPositions(prev => prev.filter(p => p.id !== id));
   };
 
   const inputStyle = {
@@ -85,7 +85,7 @@ export default function PositionsTab() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
         <div>
           <h2 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '0.2rem' }}>持仓追踪</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>记录和追踪你的期权仓位，数据保存在本地数据库。</p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>数据保存在本地浏览器，不受服务器重启影响。</p>
         </div>
         <button
           onClick={() => setShowForm(v => !v)}
@@ -98,8 +98,6 @@ export default function PositionsTab() {
           <Plus size={15} /> 新增持仓
         </button>
       </div>
-
-      {error && <ErrorBox message={error} />}
 
       {/* 新增表单 */}
       {showForm && (
@@ -139,8 +137,8 @@ export default function PositionsTab() {
               <input type="text" value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="如：等待财报后波动率下降" style={{ ...inputStyle, width: '100%' }} />
             </div>
             <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <button type="submit" disabled={submitting} style={{ background: 'rgba(16,185,129,0.2)', border: '1px solid rgba(16,185,129,0.4)', color: '#10b981', padding: '0.5rem 1.25rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
-                {submitting ? '保存中…' : '✓ 保存'}
+              <button type="submit" style={{ background: 'rgba(16,185,129,0.2)', border: '1px solid rgba(16,185,129,0.4)', color: '#10b981', padding: '0.5rem 1.25rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
+                ✓ 保存
               </button>
               <button type="button" onClick={() => setShowForm(false)} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem' }}>
                 取消
@@ -160,9 +158,7 @@ export default function PositionsTab() {
           {positions.map(pos => {
             const isSell = pos.strategy.startsWith('sell_');
             const maxProfit = (pos.premium * pos.quantity * 100).toFixed(2);
-            const maxLoss = isSell
-              ? ((pos.strike - pos.premium) * pos.quantity * 100).toFixed(2)
-              : (pos.premium * pos.quantity * 100).toFixed(2);
+            const maxLoss = ((isSell ? pos.strike - pos.premium : pos.premium) * pos.quantity * 100).toFixed(2);
             const breakEven = isSell
               ? (pos.strategy === 'sell_put' ? pos.strike - pos.premium : pos.strike + pos.premium)
               : (pos.strategy === 'buy_call' ? pos.strike + pos.premium : pos.strike - pos.premium);
@@ -181,7 +177,7 @@ export default function PositionsTab() {
                     { label: '合约数', value: `${pos.quantity} 张` },
                     { label: '盈亏平衡', value: `$${breakEven.toFixed(2)}`, tip: TIPS.breakEven },
                     { label: '最大获利', value: `$${maxProfit}`, color: '#10b981', tip: TIPS.maxProfit },
-                    { label: '最大亏损', value: isSell ? `$${maxLoss}` : `$${maxLoss}`, color: '#ef4444', tip: TIPS.maxLoss },
+                    { label: '最大亏损', value: `$${maxLoss}`, color: '#ef4444', tip: TIPS.maxLoss },
                     { label: '到期日', value: pos.expiration_date },
                   ].map(({ label, value, color, tip }) => (
                     <div key={label} style={{ textAlign: 'center' }}>
@@ -195,6 +191,11 @@ export default function PositionsTab() {
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '2px' }}>剩余时间</div>
                     <div style={{ fontSize: '0.85rem' }}><DaysUntil dateStr={pos.expiration_date} /></div>
                   </div>
+                  {pos.notes ? (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic', maxWidth: '200px' }}>
+                      {pos.notes}
+                    </div>
+                  ) : null}
                 </div>
                 <button
                   onClick={() => handleDelete(pos.id)}

@@ -9,7 +9,7 @@ import { TIPS } from '../../constants/tooltips';
 
 // ── 首次扫描专用 Loading（仅在没有任何数据时显示）────────────────────────────
 const SCAN_STEPS = [
-  '正在连接 Yahoo Finance 数据源…',
+  '正在连接期权数据源…',
   '正在获取 AAPL / MSFT / NVDA 期权链…',
   '正在获取 AMZN / TSLA / GOOGL 期权链…',
   '正在获取 META / JPM / V 期权链…',

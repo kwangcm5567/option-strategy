@@ -2,15 +2,63 @@
 /api/scan  —  期权扫描主接口
 """
 import math
+import os
 from datetime import datetime
 
 import pandas as pd
+import requests
 import yfinance as yf
 from fastapi import APIRouter, Query
 
 from services import cache as cache_svc
 from services.scanner import scan_options, _calc_empirical_win_rate
 from services.greeks import calc_black_scholes
+
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
+
+
+def _fmp_history(symbol: str) -> pd.DataFrame:
+    """从 FMP 获取约 2 年日线数据（504 交易日），转换为与 yfinance 兼容的 DataFrame。"""
+    if not FMP_API_KEY:
+        return pd.DataFrame()
+    try:
+        url = (
+            f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}"
+            f"?timeseries=504&apikey={FMP_API_KEY}"
+        )
+        resp = requests.get(url, timeout=20)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+        data = resp.json().get("historical", [])
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+        df = df.rename(columns={
+            "close": "Close", "open": "Open",
+            "high": "High", "low": "Low", "volume": "Volume",
+        })
+        return df[["Open", "High", "Low", "Close", "Volume"]]
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fmp_news(symbol: str) -> list[dict]:
+    """从 FMP 获取最新 10 条新闻。"""
+    if not FMP_API_KEY:
+        return []
+    try:
+        url = (
+            f"https://financialmodelingprep.com/api/v3/stock_news"
+            f"?tickers={symbol}&limit=10&apikey={FMP_API_KEY}"
+        )
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        return resp.json()
+    except Exception:
+        return []
 
 router = APIRouter()
 
@@ -60,55 +108,62 @@ def analyze_option(
     """
     单条期权的深度分析：历史验证 + 价格图表 + 新闻情绪 + Greeks
     """
+    from fastapi import HTTPException
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-    ticker = yf.Ticker(symbol)
-    history = ticker.history(period="2y")
+    # ── 历史数据：优先 FMP，fallback yfinance ──
+    history = _fmp_history(symbol)
     if history.empty:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="找不到历史数据")
+        try:
+            history = yf.Ticker(symbol).history(period="2y")
+        except Exception:
+            history = pd.DataFrame()
+    if history.empty:
+        raise HTTPException(status_code=404, detail="找不到历史数据，请稍后重试")
 
     # ── 历史回测 ──
     win_rate, total, safe, triggered = _calc_empirical_win_rate(
         history, dte, current_price, strike
     )
 
-    # ── 价格图表（含 ±1σ 预期区间标注）──
+    # ── 价格图表 ──
     chart_data = [
         {"date": d.strftime("%Y-%m-%d"), "price": round(float(row["Close"]), 2)}
         for d, row in history.iterrows()
     ]
 
-    # ── 新闻情绪 ──
+    # ── 新闻情绪：优先 FMP，fallback yfinance ──
     AUTHORITATIVE = {
-        "Bloomberg", "Reuters", "The Wall Street Journal", "Yahoo Finance",
-        "CNBC", "Financial Times", "MarketWatch", "Barrons", "Forbes",
+        "Bloomberg", "Reuters", "The Wall Street Journal",
+        "CNBC", "Financial Times", "MarketWatch", "Barron's", "Forbes",
     }
     analyzer = SentimentIntensityAnalyzer()
-    raw_news = ticker.news or []
     articles = []
 
-    for item in raw_news:
-        content = item.get("content", {})
-        if content:
-            publisher = content.get("provider", {}).get("displayName", "")
-            title = content.get("title", "")
-            link = content.get("canonicalUrl", {}).get("url", "")
-        else:
-            publisher = item.get("publisher", "")
+    fmp_news = _fmp_news(symbol)
+    if fmp_news:
+        for item in fmp_news:
             title = item.get("title", "")
-            link = item.get("link", "")
-
-        if not title:
-            continue
-
-        score = analyzer.polarity_scores(title)["compound"]
-        articles.append({
-            "title": title,
-            "publisher": publisher,
-            "link": link,
-            "sentimentScore": score,
-        })
+            publisher = item.get("site", "")
+            link = item.get("url", "")
+            if not title:
+                continue
+            score = analyzer.polarity_scores(title)["compound"]
+            articles.append({"title": title, "publisher": publisher, "link": link, "sentimentScore": score})
+    else:
+        try:
+            raw_news = yf.Ticker(symbol).news or []
+            for item in raw_news:
+                content = item.get("content", {})
+                publisher = content.get("provider", {}).get("displayName", "") if content else item.get("publisher", "")
+                title = content.get("title", "") if content else item.get("title", "")
+                link = content.get("canonicalUrl", {}).get("url", "") if content else item.get("link", "")
+                if not title:
+                    continue
+                score = analyzer.polarity_scores(title)["compound"]
+                articles.append({"title": title, "publisher": publisher, "link": link, "sentimentScore": score})
+        except Exception:
+            pass
 
     articles.sort(key=lambda x: 0 if x["publisher"] in AUTHORITATIVE else 1)
     top_articles = articles[:5]
