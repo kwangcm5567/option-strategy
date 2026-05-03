@@ -1,4 +1,6 @@
+import { useState, useEffect } from 'react';
 import Tooltip from '../../components/ui/Tooltip';
+import { API_BASE } from '../../hooks/useApi';
 import { TIPS } from '../../constants/tooltips';
 
 const STRATEGY_CONFIG = {
@@ -73,7 +75,24 @@ function MetricRow({ label, value, tip, valueColor }) {
   );
 }
 
+const NEWS_RISK_STYLE = {
+  高: { color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.3)' },
+  中: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)' },
+  低: { color: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.3)' },
+};
+
 export default function OptionCard({ option, onClick }) {
+  const [newsRisk, setNewsRisk] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/news/${option.symbol}?strategy=${option.strategy}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && !cancelled) setNewsRisk(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [option.symbol, option.strategy]);
+
   const cfg = STRATEGY_CONFIG[option.strategy] || STRATEGY_CONFIG.sell_put;
   const isSell = option.strategy.startsWith('sell_');
   const thetaDisplay = option.thetaPerDay != null
@@ -112,8 +131,30 @@ export default function OptionCard({ option, onClick }) {
 
       {/* ── 财报高危警告 ── */}
       {option.earningsRisk && (
-        <div style={{ background: 'rgba(239, 68, 68, 0.2)', color: 'var(--danger-color)', padding: '0.4rem 0.6rem', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.35rem', marginBottom: '0.75rem', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+        <div style={{ background: 'rgba(239, 68, 68, 0.2)', color: 'var(--danger-color)', padding: '0.4rem 0.6rem', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.35rem', marginBottom: '0.5rem', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
           <span style={{fontSize: '1rem'}}>⚠️</span> 财报高危 (Earnings Before Expiry: {option.earningsDate})
+        </div>
+      )}
+
+      {/* ── 新闻风险徽标 ── */}
+      {newsRisk && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '0.5rem',
+          padding: '0.35rem 0.6rem', borderRadius: '6px', fontSize: '0.75rem',
+          marginBottom: '0.75rem',
+          background: NEWS_RISK_STYLE[newsRisk.riskLevel]?.bg,
+          border: `1px solid ${NEWS_RISK_STYLE[newsRisk.riskLevel]?.border}`,
+          color: NEWS_RISK_STYLE[newsRisk.riskLevel]?.color,
+        }}>
+          <span>📰</span>
+          <span style={{ fontWeight: 700 }}>新闻风险：{newsRisk.riskLevel}</span>
+          <span style={{ opacity: 0.8 }}>·</span>
+          <span>{newsRisk.overallSentiment}</span>
+          {newsRisk.topRiskKeywords?.length > 0 && (
+            <span style={{ opacity: 0.75, fontSize: '0.7rem' }}>
+              [{newsRisk.topRiskKeywords.slice(0, 2).join('、')}]
+            </span>
+          )}
         </div>
       )}
 
