@@ -190,24 +190,28 @@ export default function ScannerTab() {
         </div>
 
         {/* ── 财报高危开关 ── */}
-        <button
-          onClick={() => setHideEarningsRisk(v => !v)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '0.4rem',
-            padding: '0.35rem 0.75rem', borderRadius: '8px', cursor: 'pointer',
-            fontSize: '0.78rem', transition: 'all 0.2s',
-            border: hideEarningsRisk
-              ? '1px solid rgba(239,68,68,0.5)'
-              : '1px solid rgba(255,255,255,0.1)',
-            background: hideEarningsRisk
-              ? 'rgba(239,68,68,0.12)'
-              : 'rgba(255,255,255,0.04)',
-            color: hideEarningsRisk ? '#fca5a5' : 'var(--text-secondary)',
-          }}
-        >
-          {hideEarningsRisk ? '⛔' : '⚠️'}
-          {hideEarningsRisk ? '已隐藏财报高危' : '显示财报高危'}
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          <button
+            onClick={() => setHideEarningsRisk(v => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              padding: '0.35rem 0.75rem', borderRadius: '8px', cursor: 'pointer',
+              fontSize: '0.78rem', transition: 'all 0.2s',
+              border: hideEarningsRisk
+                ? '1px solid rgba(239,68,68,0.5)'
+                : '1px solid rgba(255,255,255,0.15)',
+              background: hideEarningsRisk
+                ? 'rgba(239,68,68,0.12)'
+                : 'rgba(16,185,129,0.08)',
+              color: hideEarningsRisk ? '#fca5a5' : '#6ee7b7',
+            }}
+          >
+            {hideEarningsRisk ? '⛔ 隐藏财报高危期权（已开启）' : '✅ 显示所有期权（含财报高危）'}
+          </button>
+          <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', paddingLeft: '4px' }}>
+            点击切换：财报前期权风险较高
+          </span>
+        </div>
 
         <button
           onClick={handleRefresh}

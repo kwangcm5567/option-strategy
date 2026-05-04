@@ -135,47 +135,62 @@ export default function StrategyTab() {
                 到期日：{expirationDate}（{dte} 天后）
               </h3>
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.79rem' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-secondary)' }}>
-                      {['行权价', '权利金', '买/卖价', '距离%', '平衡点', 'Delta ⓘ', 'Theta/天 ⓘ', 'IV%', 'IV Rank ⓘ', '理论 PoP ⓘ', '成交量'].map((h, i) => (
-                        <th key={i} style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
+                      {[
+                        '行权价', '权利金', '买价/卖价', '距离%', '平衡点',
+                        'Delta', 'Gamma', 'Theta/天', 'Vega/1%IV',
+                        'IV%', 'IV Rank', 'PoP', '成交量', '未平仓'
+                      ].map((h, i) => (
+                        <th key={i} style={{ padding: '0.4rem 0.5rem', textAlign: 'right', fontWeight: 500, whiteSpace: 'nowrap' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {options.map((opt, i) => (
-                      <tr
-                        key={i}
-                        onClick={() => setSelected({ ...opt, expirationDate, dte, strategy, currentPrice: chainData.currentPrice, symbol: chainData.symbol })}
-                        style={{
-                          borderBottom: '1px solid rgba(255,255,255,0.04)',
-                          cursor: 'pointer',
-                          background: selected?.strike === opt.strike && selected?.expirationDate === expirationDate ? 'rgba(59,130,246,0.12)' : 'transparent',
-                          transition: 'background 0.15s',
-                        }}
-                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
-                        onMouseLeave={e => e.currentTarget.style.background = selected?.strike === opt.strike ? 'rgba(59,130,246,0.12)' : 'transparent'}
-                      >
-                        {[
-                          { val: `$${opt.strike.toFixed(2)}`, color: opt.inTheMoney ? '#f59e0b' : 'var(--text-primary)' },
-                          { val: `$${opt.premium.toFixed(2)}`, color: '#60a5fa' },
-                          { val: `$${opt.bid}/$${opt.ask}`, color: 'var(--text-secondary)' },
-                          { val: `${opt.distancePct?.toFixed(1)}%`, color: (opt.distancePct || 0) >= 5 ? '#10b981' : '#f59e0b' },
-                          { val: `$${opt.breakEven?.toFixed(2)}` },
-                          { val: opt.delta?.toFixed(3) ?? 'N/A' },
-                          { val: opt.thetaPerDay != null ? (isSell ? `+$${Math.abs(opt.thetaPerDay).toFixed(2)}` : `-$${Math.abs(opt.thetaPerDay).toFixed(2)}`) : 'N/A', color: isSell ? '#10b981' : '#ef4444' },
-                          { val: `${opt.impliedVolatility}%` },
-                          { val: `${opt.ivRank}%`, color: opt.ivRank >= 60 ? '#ef4444' : opt.ivRank >= 30 ? '#f59e0b' : '#10b981' },
-                          { val: opt.popTheoretical != null ? `${opt.popTheoretical}%` : 'N/A', color: (opt.popTheoretical || 0) >= 70 ? '#10b981' : '#f59e0b' },
-                          { val: opt.volume.toLocaleString(), color: 'var(--text-secondary)' },
-                        ].map(({ val, color }, ci) => (
-                          <td key={ci} style={{ padding: '0.45rem 0.6rem', textAlign: 'right', color: color || 'var(--text-primary)', whiteSpace: 'nowrap' }}>{val}</td>
-                        ))}
-                      </tr>
-                    ))}
+                    {options.map((opt, i) => {
+                      const isSelected = selected?.strike === opt.strike && selected?.expirationDate === expirationDate;
+                      return (
+                        <tr
+                          key={i}
+                          onClick={() => setSelected({ ...opt, expirationDate, dte, strategy, currentPrice: chainData.currentPrice, symbol: chainData.symbol })}
+                          style={{
+                            borderBottom: '1px solid rgba(255,255,255,0.04)',
+                            cursor: 'pointer',
+                            background: isSelected ? 'rgba(59,130,246,0.12)' : 'transparent',
+                            transition: 'background 0.15s',
+                          }}
+                          onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = isSelected ? 'rgba(59,130,246,0.12)' : 'transparent'; }}
+                        >
+                          {[
+                            { val: `$${opt.strike.toFixed(2)}`, color: opt.inTheMoney ? '#f59e0b' : 'var(--text-primary)', bold: true },
+                            { val: `$${Number(opt.premium).toFixed(2)}`, color: '#60a5fa' },
+                            { val: `$${opt.bid}/$${opt.ask}`, color: 'var(--text-secondary)' },
+                            { val: opt.distancePct != null ? `${opt.distancePct.toFixed(1)}%` : '—', color: (opt.distancePct || 0) >= 5 ? '#10b981' : '#f59e0b' },
+                            { val: opt.breakEven != null ? `$${opt.breakEven.toFixed(2)}` : '—' },
+                            { val: opt.delta != null ? opt.delta.toFixed(3) : '—', color: opt.delta != null ? (Math.abs(opt.delta) < 0.3 ? '#10b981' : Math.abs(opt.delta) < 0.5 ? '#f59e0b' : '#ef4444') : 'var(--text-secondary)' },
+                            { val: opt.gamma != null ? opt.gamma.toFixed(4) : '—', color: 'var(--text-secondary)' },
+                            { val: opt.thetaPerDay != null ? (isSell ? `+$${Math.abs(opt.thetaPerDay).toFixed(2)}` : `-$${Math.abs(opt.thetaPerDay).toFixed(2)}`) : '—', color: isSell ? '#10b981' : '#ef4444' },
+                            { val: opt.vegaPerPct != null ? `$${Math.abs(opt.vegaPerPct).toFixed(2)}` : '—', color: 'var(--text-secondary)' },
+                            { val: opt.impliedVolatility != null ? `${opt.impliedVolatility}%${opt.ivEstimated ? '*' : ''}` : '—', color: opt.ivEstimated ? 'var(--text-secondary)' : 'var(--text-primary)' },
+                            { val: `${opt.ivRank}%`, color: opt.ivRank >= 60 ? '#ef4444' : opt.ivRank >= 30 ? '#f59e0b' : '#10b981' },
+                            { val: opt.popTheoretical != null ? `${opt.popTheoretical}%` : '—', color: (opt.popTheoretical || 0) >= 70 ? '#10b981' : '#f59e0b' },
+                            { val: opt.volume.toLocaleString(), color: 'var(--text-secondary)' },
+                            { val: opt.openInterest?.toLocaleString() ?? '—', color: 'var(--text-secondary)' },
+                          ].map(({ val, color, bold }, ci) => (
+                            <td key={ci} style={{ padding: '0.4rem 0.5rem', textAlign: 'right', color: color || 'var(--text-primary)', whiteSpace: 'nowrap', fontWeight: bold ? 600 : 400 }}>{val}</td>
+                          ))}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
+                {options.some(o => o.ivEstimated) && (
+                  <p style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: '0.3rem' }}>
+                    * IV 标注星号表示 yfinance 未提供该期权的隐含波动率，改用历史波动率（{chainData.histVolatility}%）估算 Greeks
+                  </p>
+                )}
               </div>
             </div>
           ))}

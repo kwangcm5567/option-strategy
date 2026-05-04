@@ -245,16 +245,24 @@ def _process_row(
         return None
 
     strike = float(row["strike"])
-    premium = float(row["lastPrice"]) if not pd.isna(row["lastPrice"]) else 0.0
+    last_price = float(row["lastPrice"]) if not pd.isna(row["lastPrice"]) else 0.0
     bid = float(row["bid"]) if not pd.isna(row.get("bid", float("nan"))) else 0.0
     ask = float(row["ask"]) if not pd.isna(row.get("ask", float("nan"))) else 0.0
     iv = float(row["impliedVolatility"]) if not pd.isna(row["impliedVolatility"]) else 0.0
     volume = int(row["volume"]) if not pd.isna(row.get("volume", float("nan"))) else 0
     oi = int(row["openInterest"]) if not pd.isna(row.get("openInterest", float("nan"))) else 0
 
-    if premium <= 0.05 or bid <= 0.0 or iv <= 0:
+    # 用 mid 兜底（许多活跃期权近期无成交但 bid/ask 有效）
+    mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0.0
+    premium = last_price if last_price > 0.05 else mid
+    if premium < 0.05:
         return None
-    if volume < 5 or oi < 25:
+
+    # IV：yfinance 原始值优先，不可靠时用历史波动率
+    if iv < 0.005:
+        iv = hist_vol
+
+    if volume < 3 or oi < 10:
         return None
 
     bid_ask_spread = round(ask - bid, 2)
@@ -312,7 +320,7 @@ def _process_row(
     if strategy == "sell_put":
         win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
         pop_empirical = round(win_rate * 100, 1)
-        if pop_empirical < 60:
+        if pop_empirical < 50:
             return None
     elif strategy == "buy_put":
         pop_empirical = _empirical_win_put_buy(down_windows, distance_pct)
