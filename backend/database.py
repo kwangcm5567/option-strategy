@@ -15,7 +15,7 @@ def get_conn() -> sqlite3.Connection:
 
 
 def init_db():
-    """初始化数据库，创建 positions 表（若不存在）。"""
+    """初始化数据库，创建 positions 表（若不存在）并迁移平仓字段。"""
     with get_conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS positions (
@@ -28,7 +28,23 @@ def init_db():
                 expiration_date TEXT    NOT NULL,
                 open_date       TEXT    NOT NULL,
                 notes           TEXT,
-                created_at      TEXT    DEFAULT (datetime('now'))
+                created_at      TEXT    DEFAULT (datetime('now')),
+                status          TEXT    NOT NULL DEFAULT 'open',
+                exit_premium    REAL,
+                exit_date       TEXT,
+                realized_pnl    REAL,
+                close_reason    TEXT
             )
         """)
+        # 为旧表补齐新列（迁移兼容）
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+        for col, definition in [
+            ("status",       "TEXT NOT NULL DEFAULT 'open'"),
+            ("exit_premium", "REAL"),
+            ("exit_date",    "TEXT"),
+            ("realized_pnl", "REAL"),
+            ("close_reason", "TEXT"),
+        ]:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {definition}")
         conn.commit()
