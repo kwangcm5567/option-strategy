@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move
+from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
 
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 
@@ -63,10 +63,7 @@ def _fetch_earnings_map() -> dict[str, int]:
 # ─── 批量拉取除息日（FMP 优先）────────────────────────────────────────────
 
 def _fetch_dividend_map() -> dict[str, str]:
-    """
-    返回 {symbol: ex_div_date_str}（未来 90 天内的最近一次除息日）。
-    不支持股息的成长股自然不会出现在返回字典里。
-    """
+    """返回 {symbol: ex_div_date_str}，未来 90 天内最近一次除息日。"""
     if not FMP_API_KEY:
         return {}
     try:
@@ -86,7 +83,7 @@ def _fetch_dividend_map() -> dict[str, str]:
         result: dict[str, str] = {}
         for item in resp.json():
             sym = item.get("symbol", "").upper()
-            date_str = item.get("date", "")   # ex-dividend date
+            date_str = item.get("date", "")
             if sym in TICKERS and date_str and sym not in result:
                 result[sym] = date_str
         return result
@@ -97,21 +94,16 @@ def _fetch_dividend_map() -> dict[str, str]:
 # ─── 流动性综合评分（1–10）────────────────────────────────────────────────
 
 def _liquidity_score(volume: int, oi: int, spread_pct: float) -> int:
-    """
-    基于成交量、持仓量、买卖价差综合打分。
-    - volume  ：每 100 手 +1 分，上限 4 分
-    - OI      ：每 200 张 +1 分，上限 3 分
-    - spread%  ：每 5% +1 分惩罚，上限 3 分
-    """
     v = min(4, volume // 100)
     o = min(3, oi // 200)
     s = max(0, 3 - int(spread_pct / 5))
     return min(10, v + o + s)
 
 
-# ─── 历史滚动窗口回测（计算经验胜率） ────────────────────────────────────────
+# ─── 历史窗口预计算（下行 + 上行）────────────────────────────────────────
 
 def _precompute_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
+    """预计算每个下行窗口 (start_date, start_price, window_min, drop_pct)。"""
     if history_df.empty:
         return []
     trading_dte = max(1, int(dte * 252 / 365))
@@ -127,8 +119,26 @@ def _precompute_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
     return windows
 
 
+def _precompute_up_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
+    """预计算每个上行窗口 (start_date, start_price, window_max, gain_pct)。"""
+    if history_df.empty:
+        return []
+    trading_dte = max(1, int(dte * 252 / 365))
+    windows = []
+    for i in range(len(history_df) - trading_dte):
+        window = history_df.iloc[i: i + trading_dte]
+        start_price = float(window["Close"].iloc[0])
+        if start_price <= 0:
+            continue
+        window_max = float(window["High"].max())
+        gain_pct = (window_max - start_price) / start_price
+        windows.append((window.index[0], start_price, window_max, gain_pct))
+    return windows
+
+
 def _calc_empirical_win_rate(history_df: pd.DataFrame, dte: int, current_price: float, strike: float,
                               _windows: list[tuple] | None = None):
+    """sell_put 经验胜率：股价从未跌破行权价的窗口比例。"""
     if history_df.empty or current_price <= 0:
         return 1.0, 0, 0, []
 
@@ -170,6 +180,25 @@ def _calc_empirical_win_rate(history_df: pd.DataFrame, dte: int, current_price: 
     return safe_windows / total_windows, total_windows, safe_windows, triggered_events
 
 
+def _empirical_win_call(up_windows: list[tuple], distance_pct: float) -> float | None:
+    """buy_call / sell_call 经验胜率：基于上行窗口。"""
+    if not up_windows:
+        return None
+    target = distance_pct / 100
+    # buy_call: wins if stock DID gain >= target
+    wins = sum(1 for _, _, _, gain in up_windows if gain >= target)
+    return round(wins / len(up_windows) * 100, 1)
+
+
+def _empirical_win_put_buy(down_windows: list[tuple], distance_pct: float) -> float | None:
+    """buy_put 经验胜率：基于下行窗口。"""
+    if not down_windows:
+        return None
+    target = distance_pct / 100
+    wins = sum(1 for _, _, _, drop in down_windows if drop >= target)
+    return round(wins / len(down_windows) * 100, 1)
+
+
 # ─── 综合评分算法 ─────────────────────────────────────────────────────────────
 
 def _score(opt: dict) -> float:
@@ -178,7 +207,6 @@ def _score(opt: dict) -> float:
     pop_e = opt.get("popEmpirical", 50) / 100
     ann_norm = min(opt.get("annualizedReturn", 0) / 50, 1.0)
     spread_penalty = min(opt.get("bidAskSpreadPct", 10) / 100, 1.0)
-    # 流动性低时额外惩罚
     liq_penalty = max(0.0, (5 - opt.get("liquidityScore", 5)) * 0.02)
 
     return (
@@ -204,7 +232,8 @@ def _process_row(
     strategy: str,
     date_str: str,
     today: datetime,
-    precomputed_windows: list[tuple] | None = None,
+    down_windows: list[tuple] | None = None,
+    up_windows: list[tuple] | None = None,
     earnings_date_str: str | None = None,
     days_to_earnings: int = 999,
     gap_risk_count: int = 0,
@@ -231,7 +260,6 @@ def _process_row(
     bid_ask_spread = round(ask - bid, 2)
     bid_ask_spread_pct = round((bid_ask_spread / premium * 100) if premium > 0 else 100, 1)
 
-    # ── 方向与距离 ──
     is_put = strategy in ("sell_put", "buy_put")
     bs_type = "put" if is_put else "call"
 
@@ -258,7 +286,6 @@ def _process_row(
             max_profit = None
             max_loss = round(premium * 100, 2)
 
-    # ── DTE 范围过滤 ──
     if strategy in ("sell_put", "sell_call"):
         if not (7 <= dte <= 60):
             return None
@@ -266,7 +293,6 @@ def _process_row(
         if not (14 <= dte <= 180):
             return None
 
-    # ── 年化回报 ──
     return_pct = round(premium / strike * 100, 2)
     annualized_return = round(return_pct * (365 / max(dte, 1)), 1)
 
@@ -277,39 +303,50 @@ def _process_row(
     if strategy == "buy_call" and current_price < sma50:
         return None
 
-    # ── IV vs HV ──
     iv_hv_ratio = round(iv / hist_vol, 2) if hist_vol > 0 and iv > 0 else None
-
-    # ── IV Rank ──
     iv_rank = calc_iv_rank(history_1y, iv)
-
-    # ── Black-Scholes Greeks ──
     greeks = calc_black_scholes(current_price, strike, dte, iv, bs_type)
-
-    # ── 预期波动区间 ──
     exp_move = calc_expected_move(current_price, iv, dte)
 
-    # ── 经验胜率 ──
+    # ── 四种策略的经验胜率 ──
     if strategy == "sell_put":
-        win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, precomputed_windows)
+        win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
         pop_empirical = round(win_rate * 100, 1)
         if pop_empirical < 60:
             return None
+    elif strategy == "buy_put":
+        pop_empirical = _empirical_win_put_buy(down_windows, distance_pct)
+    elif strategy == "buy_call":
+        pop_empirical = _empirical_win_call(up_windows, distance_pct)
+    elif strategy == "sell_call":
+        # sell_call: win if stock did NOT rise above strike
+        if up_windows:
+            wins = sum(1 for _, _, _, gain in up_windows if gain < distance_pct / 100)
+            pop_empirical = round(wins / len(up_windows) * 100, 1)
+        else:
+            pop_empirical = greeks["pop"] if greeks else None
     else:
         pop_empirical = greeks["pop"] if greeks else None
 
-    # ── theta/vega 每合约 ──
+    # ── P50（仅卖出策略）──
+    p50 = calc_p50(current_price, strike, premium, dte, iv, strategy)
+
     theta_per_contract = None
     vega_per_contract = None
     if greeks:
         theta_per_contract = round(greeks["theta_day"] * 100, 2)
         vega_per_contract = round(greeks["vega_1pct"] * 100, 2)
 
-    # ── 流动性评分 ──
     liquidity_score = _liquidity_score(volume, oi, bid_ask_spread_pct)
-
-    # ── 除息日风险：除息日落在 DTE 窗口内 ──
     dividend_risk = bool(ex_div_date and 0 <= days_to_div <= dte)
+
+    # 每合约所需资金
+    if strategy == "sell_put":
+        capital_required = round(strike * 100, 0)
+    elif strategy in ("buy_call", "buy_put"):
+        capital_required = round(premium * 100, 0)
+    else:
+        capital_required = None   # sell_call 需要保证金，各券商不同
 
     result = {
         "symbol": symbol,
@@ -342,18 +379,18 @@ def _process_row(
         "bidAskSpreadPct": bid_ask_spread_pct,
         "popTheoretical": greeks["pop"] if greeks else None,
         "popEmpirical": pop_empirical,
+        "p50": p50,
         "volume": volume,
         "openInterest": oi,
         "liquidityScore": liquidity_score,
+        "supportLevel": round(support_level, 2),
         "riskScore": round(strike / support_level, 2) if support_level > 0 else 1.0,
+        "capitalRequired": capital_required,
         "aboveSma50": current_price >= sma50,
-        # 财报风险
         "earningsDate": earnings_date_str,
         "earningsRisk": bool(dte >= days_to_earnings and days_to_earnings >= 0),
-        # 除息风险
         "exDivDate": ex_div_date,
         "dividendRisk": dividend_risk,
-        # 跳空风险
         "gapRiskCount": gap_risk_count,
         "gapRisk": gap_risk_count >= 3,
     }
@@ -375,9 +412,11 @@ def scan_options(
     today = datetime.now()
     results = []
 
-    # 两次批量 API：财报日期 + 除息日期
     earnings_map = _fetch_earnings_map()
     dividend_map = _fetch_dividend_map()
+
+    needs_down = any(s in strategies for s in ("sell_put", "buy_put"))
+    needs_up   = any(s in strategies for s in ("buy_call", "sell_call"))
 
     for symbol in TICKERS:
         try:
@@ -392,14 +431,12 @@ def scan_options(
             sma50 = float(history["Close"].tail(50).mean())
             support_level = float(history["Close"].tail(126).quantile(0.20))
 
-            # 财报
             days_to_earnings = earnings_map.get(symbol, 999)
             earnings_date_str = (
                 (today + timedelta(days=days_to_earnings)).strftime("%Y-%m-%d")
                 if days_to_earnings < 999 else None
             )
 
-            # 除息
             ex_div_date = dividend_map.get(symbol)
             days_to_div = 999
             if ex_div_date:
@@ -408,7 +445,6 @@ def scan_options(
                 except ValueError:
                     ex_div_date = None
 
-            # 跳空风险：过去 1 年单日跌幅超 5% 的天数
             gap_risk_count = int((daily_ret < -0.05).sum())
 
             exp_dates = ticker.options
@@ -419,12 +455,10 @@ def scan_options(
                     continue
 
                 chain = ticker.option_chain(date_str)
-
                 dte_val = dte_check
-                win_windows = (
-                    _precompute_windows(history, dte_val)
-                    if any(s == "sell_put" for s in strategies) else None
-                )
+
+                down_win = _precompute_windows(history, dte_val) if needs_down else None
+                up_win   = _precompute_up_windows(history, dte_val) if needs_up else None
 
                 for strategy in strategies:
                     rows = chain.puts if strategy in ("sell_put", "buy_put") else chain.calls
@@ -433,7 +467,8 @@ def scan_options(
                             row, symbol, current_price, history,
                             hist_vol, support_level, sma50,
                             strategy, date_str, today,
-                            precomputed_windows=win_windows if strategy == "sell_put" else None,
+                            down_windows=down_win,
+                            up_windows=up_win,
                             earnings_date_str=earnings_date_str,
                             days_to_earnings=days_to_earnings,
                             gap_risk_count=gap_risk_count,

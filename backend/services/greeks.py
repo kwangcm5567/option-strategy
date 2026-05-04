@@ -102,6 +102,39 @@ def calc_iv_rank(history_df: pd.DataFrame, current_iv_decimal: float) -> float:
         return 50.0
 
 
+def calc_p50(
+    current_price: float,
+    strike: float,
+    premium: float,
+    dte: int,
+    iv: float,
+    strategy: str,
+    r: float = _RISK_FREE_RATE,
+) -> float | None:
+    """
+    P50：到期时实现至少 50% 最大获利的概率。
+    sell_put  : P(S_T >= K - P/2)  → stock stays above 50%-profit threshold
+    sell_call : P(S_T <= K + P/2)  → stock stays below 50%-profit threshold
+    """
+    T = dte / 365.0
+    if T <= 0 or iv <= 0 or current_price <= 0:
+        return None
+    try:
+        if strategy == "sell_put":
+            k_adj = strike - premium / 2
+            if k_adj <= 0:
+                return 99.9
+            d2 = (math.log(current_price / k_adj) + (r - 0.5 * iv ** 2) * T) / (iv * math.sqrt(T))
+            return round(_norm_cdf(d2) * 100, 1)
+        if strategy == "sell_call":
+            k_adj = strike + premium / 2
+            d2 = (math.log(current_price / k_adj) + (r - 0.5 * iv ** 2) * T) / (iv * math.sqrt(T))
+            return round(_norm_cdf(-d2) * 100, 1)
+        return None
+    except Exception:
+        return None
+
+
 def calc_expected_move(current_price: float, iv_decimal: float, dte: int) -> dict:
     """
     计算基于 IV 的到期前 ±1σ 预期波动区间（约 68% 概率股价在此范围内）。
