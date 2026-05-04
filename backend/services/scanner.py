@@ -2,18 +2,68 @@
 期权扫描核心逻辑：支持 sell_put / buy_call / sell_call / buy_put 四种策略。
 """
 import math
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 
 import pandas as pd
+import requests
 import yfinance as yf
 
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move
+
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 
 TICKERS = [
     "AAPL", "MSFT", "NVDA", "JPM", "V", "JNJ", "UNH",
     "AMZN", "TSLA", "GOOGL", "META", "XOM", "CVX",
     "PG", "KO", "HD", "COST", "ABBV", "CRM", "NFLX",
 ]
+
+# ─── 批量拉取财报日期（FMP 优先，yfinance fallback）────────────────────────
+
+def _fetch_earnings_map() -> dict[str, int]:
+    """
+    返回 {symbol: days_to_earnings}，使用 FMP 一次拉取全部，避免 20 次 yfinance 调用。
+    负值表示财报已过，999 表示未知。
+    """
+    today = datetime.now()
+    result: dict[str, int] = {}
+
+    if FMP_API_KEY:
+        try:
+            end = today + timedelta(days=180)
+            resp = requests.get(
+                "https://financialmodelingprep.com/api/v3/earning_calendar",
+                params={
+                    "from": today.strftime("%Y-%m-%d"),
+                    "to": end.strftime("%Y-%m-%d"),
+                    "apikey": FMP_API_KEY,
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                for item in resp.json():
+                    sym = item.get("symbol", "").upper()
+                    date_str = item.get("date", "")
+                    if sym in TICKERS and date_str and sym not in result:
+                        dt = datetime.strptime(date_str, "%Y-%m-%d")
+                        result[sym] = (dt - today).days
+        except Exception:
+            pass
+
+    # fallback：yfinance calendar（仅补充 FMP 未覆盖的 ticker）
+    missing = [s for s in TICKERS if s not in result]
+    for sym in missing:
+        try:
+            cal = yf.Ticker(sym).calendar
+            if cal and "Earnings Date" in cal and cal["Earnings Date"]:
+                dt = cal["Earnings Date"][0].replace(tzinfo=None)
+                result[sym] = (dt - today).days
+        except Exception:
+            pass
+
+    return result
+
 
 # ─── 历史滚动窗口回测（计算经验胜率） ────────────────────────────────────────
 
@@ -282,6 +332,9 @@ def scan_options(
     today = datetime.now()
     results = []
 
+    # 批量拉取财报日期（1 次 FMP API，替代 20 次 yfinance calendar）
+    earnings_map = _fetch_earnings_map()
+
     for symbol in TICKERS:
         try:
             ticker = yf.Ticker(symbol)
@@ -294,17 +347,12 @@ def scan_options(
             hist_vol = float(daily_ret.std() * math.sqrt(252))
             sma50 = float(history["Close"].tail(50).mean())
             support_level = float(history["Close"].tail(126).quantile(0.20))
-            
-            earnings_date_str = None
-            days_to_earnings = 999
-            try:
-                cal = ticker.calendar
-                if cal and "Earnings Date" in cal and cal["Earnings Date"]:
-                    next_earnings = cal["Earnings Date"][0]
-                    earnings_date_str = next_earnings.strftime("%Y-%m-%d")
-                    days_to_earnings = (next_earnings.replace(tzinfo=None) - today).days
-            except Exception:
-                pass
+
+            days_to_earnings = earnings_map.get(symbol, 999)
+            earnings_date_str = (
+                (today + timedelta(days=days_to_earnings)).strftime("%Y-%m-%d")
+                if days_to_earnings < 999 else None
+            )
 
             exp_dates = ticker.options
 

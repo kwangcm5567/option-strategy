@@ -131,8 +131,20 @@ export default function OptionCard({ option, onClick }) {
 
       {/* ── 财报高危警告 ── */}
       {option.earningsRisk && (
-        <div style={{ background: 'rgba(239, 68, 68, 0.2)', color: 'var(--danger-color)', padding: '0.4rem 0.6rem', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.35rem', marginBottom: '0.5rem', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
-          <span style={{fontSize: '1rem'}}>⚠️</span> 财报高危 (Earnings Before Expiry: {option.earningsDate})
+        <div style={{
+          background: 'rgba(239,68,68,0.15)', color: '#fca5a5',
+          padding: '0.5rem 0.75rem', borderRadius: '8px', fontSize: '0.78rem',
+          fontWeight: 700, display: 'flex', flexDirection: 'column', gap: '0.2rem',
+          marginBottom: '0.5rem', border: '1px solid rgba(239,68,68,0.4)',
+          borderLeft: '4px solid #ef4444',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <span style={{ fontSize: '1rem' }}>⛔</span>
+            财报高危 · 到期日跨过财报
+          </div>
+          <div style={{ fontWeight: 400, fontSize: '0.72rem', color: 'rgba(252,165,165,0.8)' }}>
+            财报日 {option.earningsDate} · IV Crush 风险极高，不建议持仓跨过该日期
+          </div>
         </div>
       )}
 

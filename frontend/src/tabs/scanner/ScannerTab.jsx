@@ -104,14 +104,13 @@ export default function ScannerTab() {
   const [dteMin, setDteMin] = useState(7);
   const [dteMax, setDteMax] = useState(60);
   const [minIvRank, setMinIvRank] = useState(0);
+  const [hideEarningsRisk, setHideEarningsRisk] = useState(true);
   const [selectedOption, setSelectedOption] = useState(null);
-  // 保留上一次成功的数据，刷新时不清空卡片
   const [lastGoodOptions, setLastGoodOptions] = useState([]);
 
   const endpoint = buildEndpoint(selectedStrategies, dteMin, dteMax, minIvRank);
   const { data, loading, error, refetch } = useApi(endpoint, { timeout: 180_000 });
 
-  // 每次拿到新数据就存起来
   useEffect(() => {
     if (data?.data?.length > 0) {
       setLastGoodOptions(data.data);
@@ -124,14 +123,19 @@ export default function ScannerTab() {
     );
   };
 
-  // 刷新：传入 force_refresh=true 的 URL，只触发一次请求
   const handleRefresh = () => {
     refetch(endpoint + '&force_refresh=true');
   };
 
   const isInitialLoad = loading && lastGoodOptions.length === 0;
   const isRefreshing  = loading && lastGoodOptions.length > 0;
-  const displayOptions = data?.data || lastGoodOptions;
+  const rawOptions = data?.data || lastGoodOptions;
+  const displayOptions = hideEarningsRisk
+    ? rawOptions.filter(o => !o.earningsRisk)
+    : rawOptions;
+  const hiddenEarningsCount = hideEarningsRisk
+    ? rawOptions.filter(o => o.earningsRisk).length
+    : 0;
 
   return (
     <div style={{ animation: 'fadeInUp 0.4s ease-out' }}>
@@ -185,6 +189,26 @@ export default function ScannerTab() {
           <span>%</span>
         </div>
 
+        {/* ── 财报高危开关 ── */}
+        <button
+          onClick={() => setHideEarningsRisk(v => !v)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '0.4rem',
+            padding: '0.35rem 0.75rem', borderRadius: '8px', cursor: 'pointer',
+            fontSize: '0.78rem', transition: 'all 0.2s',
+            border: hideEarningsRisk
+              ? '1px solid rgba(239,68,68,0.5)'
+              : '1px solid rgba(255,255,255,0.1)',
+            background: hideEarningsRisk
+              ? 'rgba(239,68,68,0.12)'
+              : 'rgba(255,255,255,0.04)',
+            color: hideEarningsRisk ? '#fca5a5' : 'var(--text-secondary)',
+          }}
+        >
+          {hideEarningsRisk ? '⛔' : '⚠️'}
+          {hideEarningsRisk ? '已隐藏财报高危' : '显示财报高危'}
+        </button>
+
         <button
           onClick={handleRefresh}
           disabled={loading}
@@ -230,9 +254,16 @@ export default function ScannerTab() {
         ) : (
           <>
             {displayOptions.length > 0 && (
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-                找到 {displayOptions.length} 个符合条件的期权，按综合评分排列
-              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
+                  找到 {displayOptions.length} 个符合条件的期权，按综合评分排列
+                </p>
+                {hiddenEarningsCount > 0 && (
+                  <span style={{ fontSize: '0.75rem', color: '#fca5a5', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', padding: '0.15rem 0.5rem', borderRadius: '999px' }}>
+                    ⛔ 已隐藏 {hiddenEarningsCount} 条财报高危期权
+                  </span>
+                )}
+              </div>
             )}
             <div className="dashboard-grid">
               {displayOptions.map((opt, i) => (
