@@ -449,16 +449,31 @@ def scan_options(
 
             exp_dates = ticker.options
 
+            # 先筛出有效到期日，并限制最多 4 个（避免每只股票 8+ 次 option_chain API 调用）
+            valid_dates = []
             for date_str in exp_dates:
                 dte_check = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
-                if not (dte_min <= dte_check <= dte_max):
+                if dte_min <= dte_check <= dte_max:
+                    valid_dates.append((date_str, dte_check))
+            if not valid_dates:
+                continue
+
+            # 取最多 4 个到期日（首、中前、中后、末），覆盖短中长期
+            if len(valid_dates) > 4:
+                indices = [0, len(valid_dates) // 3, len(valid_dates) * 2 // 3, len(valid_dates) - 1]
+                valid_dates = [valid_dates[i] for i in sorted(set(indices))]
+
+            # 用中位数 DTE 预计算历史窗口（一次/股票，不再每个到期日重复）
+            rep_dte = valid_dates[len(valid_dates) // 2][1]
+            down_win = _precompute_windows(history, rep_dte) if needs_down else None
+            up_win   = _precompute_up_windows(history, rep_dte) if needs_up else None
+
+            for date_str, dte_val in valid_dates:
+                try:
+                    chain = ticker.option_chain(date_str)
+                except Exception as e:
+                    print(f"[scanner] {symbol} {date_str} option_chain 失败: {e}")
                     continue
-
-                chain = ticker.option_chain(date_str)
-                dte_val = dte_check
-
-                down_win = _precompute_windows(history, dte_val) if needs_down else None
-                up_win   = _precompute_up_windows(history, dte_val) if needs_up else None
 
                 for strategy in strategies:
                     rows = chain.puts if strategy in ("sell_put", "buy_put") else chain.calls

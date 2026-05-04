@@ -104,7 +104,7 @@ export default function ScannerTab() {
   const [dteMin, setDteMin] = useState(7);
   const [dteMax, setDteMax] = useState(60);
   const [minIvRank, setMinIvRank] = useState(0);
-  const [hideEarningsRisk, setHideEarningsRisk] = useState(true);
+  const [hideEarningsRisk, setHideEarningsRisk] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
   const [lastGoodOptions, setLastGoodOptions] = useState([]);
 
@@ -247,9 +247,23 @@ export default function ScannerTab() {
         displayOptions.length === 0 && !loading && !error ? (
           <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
             <h3>暂无符合条件的期权</h3>
-            <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem', fontSize: '0.9rem' }}>
-              当前市场条件不满足筛选标准，尝试放宽条件或点击刷新。
-            </p>
+            {hideEarningsRisk && hiddenEarningsCount > 0 ? (
+              <div style={{ marginTop: '0.75rem' }}>
+                <p style={{ color: '#fca5a5', fontSize: '0.9rem' }}>
+                  ⛔ 所有 {hiddenEarningsCount} 个期权因财报风险被隐藏（当前处于财报季）
+                </p>
+                <button
+                  onClick={() => setHideEarningsRisk(false)}
+                  style={{ marginTop: '0.75rem', padding: '0.45rem 1.2rem', borderRadius: '8px', border: '1px solid rgba(96,165,250,0.4)', background: 'rgba(59,130,246,0.15)', color: '#60a5fa', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}
+                >
+                  显示全部（含财报高危）
+                </button>
+              </div>
+            ) : (
+              <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem', fontSize: '0.9rem' }}>
+                当前市场条件不满足筛选标准，尝试放宽条件或点击刷新。
+              </p>
+            )}
           </div>
         ) : (
           <>
