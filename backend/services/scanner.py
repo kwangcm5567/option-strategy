@@ -202,20 +202,61 @@ def _empirical_win_put_buy(down_windows: list[tuple], distance_pct: float) -> fl
 # ─── 综合评分算法 ─────────────────────────────────────────────────────────────
 
 def _score(opt: dict) -> float:
+    """
+    评分逻辑：奖励"甜点区间"，惩罚极端值。
+    sell_put / sell_call: 偏好 Delta 接近 0.20、年化 10-25%、IV Rank 高。
+    """
+    strategy = opt.get("strategy", "sell_put")
     iv_rank = opt.get("ivRank", 50) / 100
-    pop_t = opt.get("popTheoretical", 50) / 100
-    pop_e = opt.get("popEmpirical", 50) / 100
-    ann_norm = min(opt.get("annualizedReturn", 0) / 50, 1.0)
-    spread_penalty = min(opt.get("bidAskSpreadPct", 10) / 100, 1.0)
-    liq_penalty = max(0.0, (5 - opt.get("liquidityScore", 5)) * 0.02)
+    spread_pct = opt.get("bidAskSpreadPct", 10)
+    liq = opt.get("liquidityScore", 5) / 10
+
+    if strategy in ("sell_put", "sell_call"):
+        ann_ret = opt.get("annualizedReturn", 0)
+        delta_abs = abs(opt.get("delta") or 0.20)
+        pop_e = (opt.get("popEmpirical") or 50) / 100
+
+        # 年化回报甜点：12-25%
+        if ann_ret < 8:
+            ann_score = max(0.0, ann_ret / 8) * 0.4
+        elif ann_ret <= 25:
+            ann_score = 0.4 + (ann_ret - 8) / 17 * 0.6
+        else:
+            ann_score = max(0.5, 1.0 - (ann_ret - 25) / 35 * 0.5)
+
+        # Delta 甜点：0.15-0.30
+        if 0.15 <= delta_abs <= 0.30:
+            delta_score = 1.0
+        elif delta_abs < 0.15:
+            delta_score = max(0.2, delta_abs / 0.15)
+        else:
+            delta_score = max(0.2, 1.0 - (delta_abs - 0.30) / 0.25)
+
+        return (
+            ann_score * 0.35
+            + delta_score * 0.25
+            + iv_rank * 0.15
+            + pop_e * 0.10
+            + liq * 0.10
+            - min(spread_pct / 100, 0.5) * 0.05
+        )
+
+    # 买方策略：偏好高 Delta、高 IV Rank
+    delta_abs = abs(opt.get("delta") or 0.50)
+    pop_e = (opt.get("popEmpirical") or 30) / 100
+    if delta_abs >= 0.45:
+        delta_score = 1.0
+    elif delta_abs >= 0.30:
+        delta_score = 0.5 + (delta_abs - 0.30) / 0.15 * 0.5
+    else:
+        delta_score = max(0.0, delta_abs / 0.30 * 0.5)
 
     return (
-        iv_rank * 0.30
-        + pop_t * 0.25
+        delta_score * 0.40
+        + iv_rank * 0.20
         + pop_e * 0.20
-        + ann_norm * 0.15
-        - spread_penalty * 0.10
-        - liq_penalty
+        + liq * 0.15
+        - min(spread_pct / 100, 0.5) * 0.05
     )
 
 
@@ -304,8 +345,14 @@ def _process_row(
     return_pct = round(premium / strike * 100, 2)
     annualized_return = round(return_pct * (365 / max(dte, 1)), 1)
 
+    # 距离过滤（避免深 OTM 垃圾期权）
     if strategy in ("sell_put", "sell_call"):
-        if annualized_return < 3 or annualized_return > 60:
+        if not (2.0 <= distance_pct <= 20.0):
+            return None
+        if annualized_return < 8 or annualized_return > 80:
+            return None
+    else:
+        if distance_pct > 15.0:  # 买方不要太深 OTM
             return None
 
     if strategy == "buy_call" and current_price < sma50:
@@ -315,6 +362,21 @@ def _process_row(
     iv_rank = calc_iv_rank(history_1y, iv)
     greeks = calc_black_scholes(current_price, strike, dte, iv, bs_type)
     exp_move = calc_expected_move(current_price, iv, dte)
+
+    # Delta 过滤（核心质量门槛）
+    if greeks:
+        d_abs = abs(greeks["delta"])
+        if strategy in ("sell_put", "sell_call"):
+            # 卖方甜点：Delta 0.10-0.40（太低=深OTM低回报，太高=高风险）
+            if not (0.10 <= d_abs <= 0.40):
+                return None
+        elif strategy == "buy_call":
+            # 买方需要足够方向性敞口
+            if d_abs < 0.30:
+                return None
+        elif strategy == "buy_put":
+            if d_abs < 0.30:
+                return None
 
     # ── 四种策略的经验胜率 ──
     if strategy == "sell_put":
