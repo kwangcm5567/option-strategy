@@ -105,6 +105,7 @@ export default function ScannerTab() {
   const [dteMax, setDteMax] = useState(60);
   const [minIvRank, setMinIvRank] = useState(0);
   const [hideEarningsRisk, setHideEarningsRisk] = useState(false);
+  const [showStandards, setShowStandards] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
   const [lastGoodOptions, setLastGoodOptions] = useState([]);
 
@@ -226,6 +227,34 @@ export default function ScannerTab() {
           <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
           {loading ? '扫描中…' : '刷新数据'}
         </button>
+      </div>
+
+      {/* ── 机构筛选标准说明（可折叠）── */}
+      <div className="glass-panel" style={{ padding: '0.7rem 1.25rem', marginBottom: '1rem' }}>
+        <button
+          onClick={() => setShowStandards(v => !v)}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer', width: '100%', padding: 0, textAlign: 'left' }}
+        >
+          <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>📐 机构筛选标准</span>
+          <span style={{ fontSize: '0.7rem', color: '#60a5fa', background: 'rgba(59,130,246,0.12)', padding: '0.1rem 0.5rem', borderRadius: '999px', border: '1px solid rgba(96,165,250,0.25)' }}>已激活</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{showStandards ? '▲ 收起' : '▼ 展开'}</span>
+        </button>
+        {showStandards && (
+          <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(195px, 1fr))', gap: '0.6rem' }}>
+            {[
+              { label: 'σ-距离 ≥ 1.0σ', desc: '行权价须超出市场预期波动幅度，甜点在 1.2σ（约 Delta 0.20）', color: '#10b981' },
+              { label: '|Δ| 0.10 – 0.40', desc: 'Delta 甜点区间，兼顾方向性敞口与安全边际', color: '#60a5fa' },
+              { label: '历史胜率 ≥ 70%', desc: '1年滚动回测安全窗口 ≥ 70%，机构级确定性最低门槛', color: '#f59e0b' },
+              { label: 'ROC ≤ 40%', desc: '年化资本回报率上限，过高意味着隐含风险超出合理范围', color: '#a78bfa' },
+              { label: '年化回报 8–80%', desc: '筛除无套利价值的低回报期权与极端高风险期权', color: '#fb7185' },
+            ].map(item => (
+              <div key={item.label} style={{ padding: '0.5rem 0.65rem', background: 'rgba(255,255,255,0.03)', borderRadius: '7px', borderLeft: `3px solid ${item.color}55` }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: item.color, marginBottom: '0.2rem' }}>{item.label}</div>
+                <div style={{ fontSize: '0.71rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>{item.desc}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── 内容区 ── */}

@@ -203,28 +203,32 @@ def _empirical_win_put_buy(down_windows: list[tuple], distance_pct: float) -> fl
 
 def _score(opt: dict) -> float:
     """
-    评分逻辑：奖励"甜点区间"，惩罚极端值。
-    sell_put / sell_call: 偏好 Delta 接近 0.20、年化 10-25%、IV Rank 高。
+    机构级评分：卖方策略以 ROC / IV溢价 / σ-距离甜点 为核心权重。
     """
     strategy = opt.get("strategy", "sell_put")
-    iv_rank = opt.get("ivRank", 50) / 100
-    spread_pct = opt.get("bidAskSpreadPct", 10)
     liq = opt.get("liquidityScore", 5) / 10
 
     if strategy in ("sell_put", "sell_call"):
-        ann_ret = opt.get("annualizedReturn", 0)
-        delta_abs = abs(opt.get("delta") or 0.20)
-        pop_e = (opt.get("popEmpirical") or 50) / 100
-
-        # 年化回报甜点：12-25%
-        if ann_ret < 8:
-            ann_score = max(0.0, ann_ret / 8) * 0.4
-        elif ann_ret <= 25:
-            ann_score = 0.4 + (ann_ret - 8) / 17 * 0.6
+        # ROC 甜点：12-25%（过低无意义，过高风险大）
+        roc_val = opt.get("roc") or opt.get("annualizedReturn") or 0
+        if roc_val < 12:
+            roc_score = max(0.0, roc_val / 12) * 0.4
+        elif roc_val <= 25:
+            roc_score = 0.4 + (roc_val - 12) / 13 * 0.6
         else:
-            ann_score = max(0.5, 1.0 - (ann_ret - 25) / 35 * 0.5)
+            roc_score = max(0.3, 1.0 - (roc_val - 25) / 30 * 0.7)
+
+        # IV 溢价（IV 相对 HV 的超额）：越高越好（卖方时机判断核心指标）
+        iv_prem = opt.get("ivPremium") or 0
+        if iv_prem <= 0:
+            iv_prem_score = max(0.0, 0.3 + iv_prem / 100 * 0.3)
+        elif iv_prem <= 50:
+            iv_prem_score = 0.3 + iv_prem / 50 * 0.7
+        else:
+            iv_prem_score = max(0.7, 1.0 - (iv_prem - 50) / 100 * 0.3)
 
         # Delta 甜点：0.15-0.30
+        delta_abs = abs(opt.get("delta") or 0.20)
         if 0.15 <= delta_abs <= 0.30:
             delta_score = 1.0
         elif delta_abs < 0.15:
@@ -232,18 +236,33 @@ def _score(opt: dict) -> float:
         else:
             delta_score = max(0.2, 1.0 - (delta_abs - 0.30) / 0.25)
 
+        # σ-距离甜点：1.0-1.5σ，峰值 1.2σ
+        std_dist = opt.get("stdDistance") or 0
+        if std_dist <= 0:
+            std_dist_score = 0.0
+        elif std_dist < 1.0:
+            std_dist_score = std_dist / 1.0 * 0.4
+        elif std_dist <= 1.2:
+            std_dist_score = 0.4 + (std_dist - 1.0) / 0.2 * 0.6
+        elif std_dist <= 1.5:
+            std_dist_score = max(0.7, 1.0 - (std_dist - 1.2) / 0.3 * 0.3)
+        else:
+            std_dist_score = max(0.3, 1.0 - (std_dist - 1.5) / 1.5 * 0.7)
+
         return (
-            ann_score * 0.35
-            + delta_score * 0.25
-            + iv_rank * 0.15
-            + pop_e * 0.10
+            roc_score * 0.30
+            + iv_prem_score * 0.25
+            + delta_score * 0.20
+            + std_dist_score * 0.15
             + liq * 0.10
-            - min(spread_pct / 100, 0.5) * 0.05
         )
 
-    # 买方策略：偏好高 Delta、高 IV Rank
+    # 买方策略：偏好高 Delta、低 IV（买方有利时进场）
     delta_abs = abs(opt.get("delta") or 0.50)
     pop_e = (opt.get("popEmpirical") or 30) / 100
+    iv_rank = opt.get("ivRank", 50) / 100
+    spread_pct = opt.get("bidAskSpreadPct", 10)
+
     if delta_abs >= 0.45:
         delta_score = 1.0
     elif delta_abs >= 0.30:
@@ -358,6 +377,25 @@ def _process_row(
     if strategy == "buy_call" and current_price < sma50:
         return None
 
+    # ── 机构标准：σ-标准化距离（1.2σ 为甜点，≥ 1.0σ 为最低准入）──
+    exp_move_pct_raw = iv * math.sqrt(dte / 365) * 100
+    std_distance = round(distance_pct / exp_move_pct_raw, 2) if exp_move_pct_raw > 0 else None
+    if strategy in ("sell_put", "sell_call") and std_distance is not None and std_distance < 1.0:
+        return None
+
+    # ── 机构标准：ROC（权利金/最大亏损 年化）──
+    if strategy == "sell_put" and (strike - premium) > 0:
+        roc = round(premium / (strike - premium) * (365 / dte) * 100, 1)
+    elif strategy == "sell_call":
+        roc = round(premium / strike * (365 / dte) * 100, 1)
+    else:
+        roc = None
+    if strategy in ("sell_put", "sell_call") and roc is not None and roc > 40:
+        return None
+
+    # IV 溢价（IV 相对历史波动率的超额；正值对卖方有利）
+    iv_premium = round((iv - hist_vol) / hist_vol * 100, 1) if hist_vol > 0 else None
+
     iv_hv_ratio = round(iv / hist_vol, 2) if hist_vol > 0 and iv > 0 else None
     iv_rank = calc_iv_rank(history_1y, iv)
     greeks = calc_black_scholes(current_price, strike, dte, iv, bs_type)
@@ -382,7 +420,7 @@ def _process_row(
     if strategy == "sell_put":
         win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
         pop_empirical = round(win_rate * 100, 1)
-        if pop_empirical < 50:
+        if pop_empirical < 70:
             return None
     elif strategy == "buy_put":
         pop_empirical = _empirical_win_put_buy(down_windows, distance_pct)
@@ -463,6 +501,9 @@ def _process_row(
         "dividendRisk": dividend_risk,
         "gapRiskCount": gap_risk_count,
         "gapRisk": gap_risk_count >= 3,
+        "stdDistance": std_distance,
+        "roc": roc,
+        "ivPremium": iv_premium,
     }
     result["score"] = round(_score(result), 4)
     return result

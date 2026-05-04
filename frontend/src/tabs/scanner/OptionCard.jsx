@@ -276,6 +276,72 @@ function MetricRow({ label, value, tip, valueColor }) {
   );
 }
 
+// ─── 机构标准评估 ─────────────────────────────────────────────────────────────
+function InstitutionalMetrics({ option }) {
+  const stdDist = option.stdDistance;
+  const roc = option.roc;
+  const ivPrem = option.ivPremium;
+
+  if (stdDist == null && roc == null && ivPrem == null) return null;
+
+  let stdDistColor = '#ef4444', stdDistLabel = '';
+  if (stdDist != null) {
+    if (stdDist >= 1.5)      { stdDistColor = '#60a5fa'; stdDistLabel = `${stdDist}σ · 保守（超出甜点区）`; }
+    else if (stdDist >= 1.2) { stdDistColor = '#10b981'; stdDistLabel = `${stdDist}σ · 最优甜点`; }
+    else if (stdDist >= 1.0) { stdDistColor = '#10b981'; stdDistLabel = `${stdDist}σ · 符合机构标准`; }
+    else                     { stdDistColor = '#ef4444'; stdDistLabel = `${stdDist}σ · 低于1.0σ最低标准`; }
+  }
+
+  let rocColor = 'var(--text-primary)', rocLabel = '';
+  if (roc != null) {
+    if (roc >= 15 && roc <= 25)  { rocColor = '#10b981'; rocLabel = '甜点 15-25%'; }
+    else if (roc >= 10)          { rocColor = '#f59e0b'; rocLabel = '可接受'; }
+    else                         { rocColor = '#ef4444'; rocLabel = '偏低'; }
+  }
+
+  let ivPremColor = 'var(--text-secondary)', ivPremLabel = '';
+  if (ivPrem != null) {
+    if (ivPrem >= 30)      { ivPremColor = '#10b981'; ivPremLabel = '卖方优势明显'; }
+    else if (ivPrem >= 10) { ivPremColor = '#f59e0b'; ivPremLabel = '轻微优势'; }
+    else if (ivPrem >= 0)  { ivPremColor = '#f59e0b'; ivPremLabel = '接近历史波动率'; }
+    else                   { ivPremColor = '#8b5cf6'; ivPremLabel = '买方占优'; }
+  }
+
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '8px', overflow: 'hidden', marginBottom: '0.75rem' }}>
+      <div style={{ padding: '0.4rem 0.6rem', background: 'rgba(59,130,246,0.08)', fontSize: '0.72rem', color: '#60a5fa', fontWeight: 600, letterSpacing: '0.05em', borderBottom: '1px solid rgba(59,130,246,0.15)' }}>
+        📐 机构标准评估
+      </div>
+      {stdDist != null && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0.6rem' }}>
+          <span style={{ fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
+            σ-距离 <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>（预期波动倍数，甜点 1.2σ）</span>
+          </span>
+          <span style={{ fontSize: '0.82rem', fontWeight: 700, color: stdDistColor }}>{stdDistLabel || `${stdDist}σ`}</span>
+        </div>
+      )}
+      {roc != null && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0.6rem', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+          <span style={{ fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
+            ROC <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>（权利金/最大亏损 年化，目标 15-25%）</span>
+          </span>
+          <span style={{ fontSize: '0.82rem', fontWeight: 700, color: rocColor }}>{roc.toFixed(1)}%{rocLabel && ` · ${rocLabel}`}</span>
+        </div>
+      )}
+      {ivPrem != null && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0.6rem', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+          <span style={{ fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
+            IV溢价 <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>（相对历史波动率，正值卖方有利）</span>
+          </span>
+          <span style={{ fontSize: '0.82rem', fontWeight: 700, color: ivPremColor }}>
+            {ivPrem > 0 ? '+' : ''}{ivPrem.toFixed(1)}%{ivPremLabel && ` · ${ivPremLabel}`}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 export default function OptionCard({ option, onClick }) {
   const [newsRisk, setNewsRisk] = useState(null);
@@ -443,6 +509,9 @@ export default function OptionCard({ option, onClick }) {
 
       {/* ── 关键价位表 ── */}
       <KeyLevels option={option} />
+
+      {/* ── 机构标准评估 ── */}
+      <InstitutionalMetrics option={option} />
 
       {/* ── 流动性 ── */}
       {option.liquidityScore != null && (
