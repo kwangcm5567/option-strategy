@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { Search, BarChart2, Briefcase, Calendar, TrendingUp } from 'lucide-react';
+import { Search, BarChart2, Briefcase, Calendar, TrendingUp, Layers } from 'lucide-react';
 import ScannerTab from './tabs/scanner/ScannerTab';
 import StrategyTab from './tabs/strategy/StrategyTab';
 import PositionsTab from './tabs/positions/PositionsTab';
 import EarningsTab from './tabs/earnings/EarningsTab';
 import MarketTab from './tabs/market/MarketTab';
+import EnhanceTab from './tabs/enhance/EnhanceTab';
 import './index.css';
 
 const TABS = [
   { id: 'scanner',   label: '扫描仪',   icon: Search,    component: ScannerTab   },
   { id: 'strategy',  label: '策略构建', icon: BarChart2,  component: StrategyTab  },
   { id: 'positions', label: '持仓追踪', icon: Briefcase,  component: PositionsTab },
+  { id: 'enhance',   label: '组合增强', icon: Layers,     component: EnhanceTab   },
   { id: 'earnings',  label: '财报雷达', icon: Calendar,   component: EarningsTab  },
   { id: 'market',    label: '市场情绪', icon: TrendingUp, component: MarketTab    },
 ];

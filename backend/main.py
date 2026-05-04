@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
-from routers import scanner, chain, positions, market, earnings, news
+from routers import scanner, chain, positions, market, earnings, news, portfolio
 
 app = FastAPI(title="Option Strategy API v2")
 
@@ -22,6 +22,7 @@ app.include_router(positions.router)
 app.include_router(market.router)
 app.include_router(earnings.router)
 app.include_router(news.router)
+app.include_router(portfolio.router)
 
 
 @app.get("/")
