@@ -10,9 +10,26 @@ const STRATEGY_CONFIG = {
   buy_put:   { label: '买入 Put', color: '#ef4444', bg: 'rgba(239,68,68,0.1)'   },
 };
 
-function IVRankBar({ value }) {
+const NEWS_RISK_STYLE = {
+  高: { color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.3)' },
+  中: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)' },
+  低: { color: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.3)' },
+};
+
+// ── IV Rank 进度条 ──────────────────────────────────────────────────────────
+function IVRankBar({ value, ivHvRatio }) {
   const color = value >= 60 ? '#ef4444' : value >= 30 ? '#f59e0b' : '#10b981';
   const label = value >= 60 ? '期权偏贵，卖方有利' : value >= 30 ? '期权正常' : '期权便宜，买方有利';
+
+  let ratioColor = '#f59e0b';
+  let ratioLabel = '估值适中';
+  if (ivHvRatio != null) {
+    if (ivHvRatio >= 1.2)      { ratioColor = '#10b981'; ratioLabel = '期权明显偏贵↑卖方优势'; }
+    else if (ivHvRatio >= 1.05) { ratioColor = '#10b981'; ratioLabel = '期权略贵'; }
+    else if (ivHvRatio <= 0.80) { ratioColor = '#8b5cf6'; ratioLabel = '期权明显偏便宜↑买方优势'; }
+    else if (ivHvRatio <= 0.95) { ratioColor = '#8b5cf6'; ratioLabel = '期权略便宜'; }
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '3px', color: 'var(--text-secondary)' }}>
@@ -22,10 +39,35 @@ function IVRankBar({ value }) {
       <div style={{ height: '5px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
         <div style={{ height: '100%', width: `${value}%`, background: color, borderRadius: '3px', transition: 'width 0.8s ease' }} />
       </div>
+      {ivHvRatio != null && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', marginTop: '5px', color: 'var(--text-secondary)' }}>
+          <span>IV / 历史波动率</span>
+          <span style={{ color: ratioColor, fontWeight: 600 }}>{ivHvRatio}× · {ratioLabel}</span>
+        </div>
+      )}
     </div>
   );
 }
 
+// ── 流动性评分 ──────────────────────────────────────────────────────────────
+function LiquidityBar({ score }) {
+  const color  = score >= 7 ? '#10b981' : score >= 5 ? '#f59e0b' : '#ef4444';
+  const label  = score >= 7 ? '流动性良好' : score >= 5 ? '流动性一般' : '流动性差，平仓可能困难';
+  const width  = `${score * 10}%`;
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '3px', color: 'var(--text-secondary)' }}>
+        <span>流动性</span>
+        <span style={{ color, fontWeight: 600 }}>{score}/10 · {label}</span>
+      </div>
+      <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width, background: color, borderRadius: '2px', transition: 'width 0.8s ease' }} />
+      </div>
+    </div>
+  );
+}
+
+// ── 获利概率双显示 ───────────────────────────────────────────────────────────
 function PoPBar({ theoretical, empirical }) {
   const agreement = theoretical != null && empirical != null && Math.abs(theoretical - empirical) <= 10;
   return (
@@ -75,12 +117,6 @@ function MetricRow({ label, value, tip, valueColor }) {
   );
 }
 
-const NEWS_RISK_STYLE = {
-  高: { color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.3)' },
-  中: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.3)' },
-  低: { color: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.3)' },
-};
-
 export default function OptionCard({ option, onClick }) {
   const [newsRisk, setNewsRisk] = useState(null);
 
@@ -101,6 +137,13 @@ export default function OptionCard({ option, onClick }) {
         : `-$${Math.abs(option.thetaPerDay).toFixed(2)}/天`)
     : 'N/A';
   const thetaColor = isSell ? '#10b981' : '#ef4444';
+
+  // 跳空风险等级
+  const gapLabel = option.gapRiskCount >= 6
+    ? { text: `🔥 跳空高风险（${option.gapRiskCount}次）`, color: '#ef4444', bg: 'rgba(239,68,68,0.1)' }
+    : option.gapRiskCount >= 3
+    ? { text: `⚡ 跳空中等风险（${option.gapRiskCount}次）`, color: '#f59e0b', bg: 'rgba(245,158,11,0.1)' }
+    : null;
 
   return (
     <div
@@ -129,18 +172,18 @@ export default function OptionCard({ option, onClick }) {
         </span>
       </div>
 
-      {/* ── 财报高危警告 ── */}
+      {/* ── 风险警告区（财报、除息、跳空、新闻）── */}
+
       {option.earningsRisk && (
         <div style={{
           background: 'rgba(239,68,68,0.15)', color: '#fca5a5',
           padding: '0.5rem 0.75rem', borderRadius: '8px', fontSize: '0.78rem',
           fontWeight: 700, display: 'flex', flexDirection: 'column', gap: '0.2rem',
-          marginBottom: '0.5rem', border: '1px solid rgba(239,68,68,0.4)',
+          marginBottom: '0.4rem', border: '1px solid rgba(239,68,68,0.4)',
           borderLeft: '4px solid #ef4444',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <span style={{ fontSize: '1rem' }}>⛔</span>
-            财报高危 · 到期日跨过财报
+            <span>⛔</span> 财报高危 · 到期日跨过财报
           </div>
           <div style={{ fontWeight: 400, fontSize: '0.72rem', color: 'rgba(252,165,165,0.8)' }}>
             财报日 {option.earningsDate} · IV Crush 风险极高，不建议持仓跨过该日期
@@ -148,32 +191,53 @@ export default function OptionCard({ option, onClick }) {
         </div>
       )}
 
-      {/* ── 新闻风险徽标 ── */}
-      {newsRisk && (
+      {option.dividendRisk && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: '0.5rem',
-          padding: '0.35rem 0.6rem', borderRadius: '6px', fontSize: '0.75rem',
-          marginBottom: '0.75rem',
-          background: NEWS_RISK_STYLE[newsRisk.riskLevel]?.bg,
-          border: `1px solid ${NEWS_RISK_STYLE[newsRisk.riskLevel]?.border}`,
-          color: NEWS_RISK_STYLE[newsRisk.riskLevel]?.color,
+          background: 'rgba(245,158,11,0.12)', color: '#fcd34d',
+          padding: '0.45rem 0.7rem', borderRadius: '8px', fontSize: '0.75rem',
+          fontWeight: 700, display: 'flex', flexDirection: 'column', gap: '0.15rem',
+          marginBottom: '0.4rem', border: '1px solid rgba(245,158,11,0.35)',
+          borderLeft: '4px solid #f59e0b',
         }}>
-          <span>📰</span>
-          <span style={{ fontWeight: 700 }}>新闻风险：{newsRisk.riskLevel}</span>
-          <span style={{ opacity: 0.8 }}>·</span>
-          <span>{newsRisk.overallSentiment}</span>
-          {newsRisk.topRiskKeywords?.length > 0 && (
-            <span style={{ opacity: 0.75, fontSize: '0.7rem' }}>
-              [{newsRisk.topRiskKeywords.slice(0, 2).join('、')}]
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <span>💰</span> 除息日在窗口内
+          </div>
+          <div style={{ fontWeight: 400, fontSize: '0.71rem', color: 'rgba(252,211,77,0.8)' }}>
+            除息日 {option.exDivDate} · 股价届时将向下跳空，卖 Put 需提高安全边际
+          </div>
+        </div>
+      )}
+
+      {/* 跳空风险 + 新闻风险：横排小徽标 */}
+      {(gapLabel || newsRisk) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem' }}>
+          {gapLabel && (
+            <span style={{
+              padding: '0.2rem 0.55rem', borderRadius: '999px', fontSize: '0.72rem',
+              color: gapLabel.color, background: gapLabel.bg,
+              border: `1px solid ${gapLabel.color}44`,
+            }}>
+              {gapLabel.text}
+            </span>
+          )}
+          {newsRisk && (
+            <span style={{
+              padding: '0.2rem 0.55rem', borderRadius: '999px', fontSize: '0.72rem',
+              color: NEWS_RISK_STYLE[newsRisk.riskLevel]?.color,
+              background: NEWS_RISK_STYLE[newsRisk.riskLevel]?.bg,
+              border: `1px solid ${NEWS_RISK_STYLE[newsRisk.riskLevel]?.border}`,
+            }}>
+              📰 新闻：{newsRisk.riskLevel}
+              {newsRisk.topRiskKeywords?.length > 0 && ` [${newsRisk.topRiskKeywords.slice(0, 2).join('、')}]`}
             </span>
           )}
         </div>
       )}
 
-      {/* ── IV Rank ── */}
+      {/* ── IV Rank + IV/HV ── */}
       <div style={{ marginBottom: '0.75rem' }}>
         <Tooltip text={TIPS.ivRank} width={280}>
-          <IVRankBar value={option.ivRank} />
+          <IVRankBar value={option.ivRank} ivHvRatio={option.ivHvRatio} />
         </Tooltip>
       </div>
 
@@ -264,6 +328,13 @@ export default function OptionCard({ option, onClick }) {
           }
         </div>
       </div>
+
+      {/* ── 流动性评分 ── */}
+      {option.liquidityScore != null && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <LiquidityBar score={option.liquidityScore} />
+        </div>
+      )}
 
       {/* ── PoP 双显示 ── */}
       <PoPBar theoretical={option.popTheoretical} empirical={option.popEmpirical} />
