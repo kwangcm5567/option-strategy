@@ -51,8 +51,21 @@ def _fetch_earnings_map() -> dict[str, int]:
     for sym in [s for s in TICKERS if s not in result]:
         try:
             cal = yf.Ticker(sym).calendar
-            if cal and "Earnings Date" in cal and cal["Earnings Date"]:
-                dt = cal["Earnings Date"][0].replace(tzinfo=None)
+            dt = None
+            if isinstance(cal, dict):
+                dates = cal.get("Earnings Date") or cal.get("earningsDate") or []
+                if dates:
+                    d = dates[0]
+                    if isinstance(d, str):
+                        dt = datetime.strptime(d[:10], "%Y-%m-%d")
+                    elif hasattr(d, "tzinfo"):
+                        dt = d.replace(tzinfo=None)
+                    else:
+                        dt = d
+            elif hasattr(cal, "iloc") and "Earnings Date" in cal.index:
+                d = cal.loc["Earnings Date"].iloc[0]
+                dt = d.replace(tzinfo=None) if hasattr(d, "tzinfo") else d
+            if dt is not None:
                 result[sym] = (dt - today).days
         except Exception:
             pass
@@ -419,7 +432,9 @@ def _process_row(
     if strategy in ("sell_put", "sell_call"):
         if not (2.0 <= distance_pct <= 20.0):
             return None
-        if annualized_return < 8 or annualized_return > 80:
+        if strategy == "sell_put" and (annualized_return < 8 or annualized_return > 80):
+            return None
+        if strategy == "sell_call" and (annualized_return < 3 or annualized_return > 80):
             return None
     else:
         if distance_pct > 15.0:  # 买方不要太深 OTM

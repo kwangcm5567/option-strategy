@@ -21,12 +21,12 @@ FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 
 
 def _fetch_fmp_earnings() -> dict[str, str]:
-    """从 FMP 拉取未来 90 天财报日历，返回 {symbol: date_str}。"""
+    """从 FMP 拉取未来 180 天财报日历，返回 {symbol: date_str}。"""
     if not FMP_API_KEY:
         return {}
     try:
         today = datetime.now()
-        end = today + timedelta(days=90)
+        end = today + timedelta(days=180)
         url = (
             "https://financialmodelingprep.com/api/v3/earning_calendar"
             f"?from={today.strftime('%Y-%m-%d')}"
@@ -51,8 +51,22 @@ def _get_next_earnings_yf(ticker) -> datetime | None:
     """yfinance fallback：先试 calendar，再试 earnings_dates。"""
     try:
         cal = ticker.calendar
-        if cal and "Earnings Date" in cal and cal["Earnings Date"]:
-            return cal["Earnings Date"][0]
+        if isinstance(cal, dict):
+            dates = cal.get("Earnings Date") or cal.get("earningsDate") or []
+            if dates:
+                dt = dates[0] if not isinstance(dates, str) else None
+                if dt is not None:
+                    if isinstance(dt, str):
+                        return datetime.strptime(dt[:10], "%Y-%m-%d")
+                    if hasattr(dt, "tzinfo"):
+                        return dt.replace(tzinfo=None)
+                    return dt
+        elif hasattr(cal, "iloc"):
+            # Some yfinance versions return a DataFrame
+            if "Earnings Date" in cal.index:
+                dt = cal.loc["Earnings Date"].iloc[0]
+                if hasattr(dt, "tzinfo"):
+                    return dt.replace(tzinfo=None)
     except Exception:
         pass
     try:

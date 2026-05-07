@@ -90,14 +90,10 @@ def calc_iv_rank(history_df: pd.DataFrame, current_iv_decimal: float) -> float:
         if rolling_hv.empty:
             return 50.0
 
-        min_hv = float(rolling_hv.min())
-        max_hv = float(rolling_hv.max())
-
-        if max_hv <= min_hv:
-            return 50.0
-
-        rank = (current_iv_decimal - min_hv) / (max_hv - min_hv) * 100
-        return round(float(min(max(rank, 0.0), 100.0)), 1)
+        # IV Percentile: fraction of historical HV days below current IV
+        # More robust than min-max (immune to spike outliers like Apr 2025)
+        rank = float((rolling_hv < current_iv_decimal).mean() * 100)
+        return round(min(max(rank, 0.0), 100.0), 1)
     except Exception:
         return 50.0
 
