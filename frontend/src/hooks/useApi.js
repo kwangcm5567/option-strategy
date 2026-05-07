@@ -7,7 +7,8 @@ export function useApi(endpoint, { timeout = 90_000 } = {}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(!!endpoint);
   const [error, setError] = useState(null);
-  const abortRef = useRef(null);
+  const abortRef    = useRef(null);
+  const loadingRef  = useRef(!!endpoint); // ref 版本供事件监听器读取
 
   const fetchData = useCallback(async (url) => {
     if (!url) return;
@@ -16,6 +17,7 @@ export function useApi(endpoint, { timeout = 90_000 } = {}) {
     abortRef.current = controller;
 
     setLoading(true);
+    loadingRef.current = true;
     setError(null);
 
     const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -31,18 +33,36 @@ export function useApi(endpoint, { timeout = 90_000 } = {}) {
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        setError('请求超时，后端正在处理数据（首次可能需要 60–90 秒），请稍后点击刷新重试。');
+        setError('请求被中断。如刚从后台返回，请点击「刷新数据」重试。');
       } else {
         setError(err.message);
       }
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   }, [timeout]);
 
   useEffect(() => {
-    if (endpoint) fetchData(endpoint);
-    return () => abortRef.current?.abort();
+    if (!endpoint) return;
+    fetchData(endpoint);
+
+    // 手机黑屏 / 切换 app 时浏览器会挂起 fetch 连接。
+    // 页面重新可见且仍在 loading 时，自动重试一次。
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && loadingRef.current) {
+        // 等 2 秒：给可能仍在传输的响应一个机会先到达
+        setTimeout(() => {
+          if (loadingRef.current) fetchData(endpoint);
+        }, 2000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      abortRef.current?.abort();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [endpoint, fetchData]);
 
   const refetch = useCallback((overrideUrl) => {
