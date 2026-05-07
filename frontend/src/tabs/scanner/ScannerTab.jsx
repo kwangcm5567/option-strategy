@@ -122,11 +122,15 @@ export default function ScannerTab() {
     setSelectedStrategies(prev =>
       prev.includes(val) ? prev.filter(s => s !== val) : [...prev, val]
     );
+    setLastGoodOptions([]);
   };
 
   const handleRefresh = () => {
     refetch(endpoint + '&force_refresh=true');
   };
+
+  const handleDteMin = (v) => { setDteMin(v); setLastGoodOptions([]); };
+  const handleDteMax = (v) => { setDteMax(v); setLastGoodOptions([]); };
 
   const isInitialLoad = loading && lastGoodOptions.length === 0;
   const isRefreshing  = loading && lastGoodOptions.length > 0;
@@ -170,12 +174,12 @@ export default function ScannerTab() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
           <span>到期天数</span>
           <input type="number" min={1} max={dteMax - 1} value={dteMin}
-            onChange={e => setDteMin(+e.target.value)}
+            onChange={e => handleDteMin(+e.target.value)}
             style={{ width: '48px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'var(--text-primary)', padding: '0.2rem 0.4rem', textAlign: 'center', fontSize: '0.82rem' }}
           />
           <span>–</span>
           <input type="number" min={dteMin + 1} max={365} value={dteMax}
-            onChange={e => setDteMax(+e.target.value)}
+            onChange={e => handleDteMax(+e.target.value)}
             style={{ width: '48px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'var(--text-primary)', padding: '0.2rem 0.4rem', textAlign: 'center', fontSize: '0.82rem' }}
           />
           <span>天</span>
