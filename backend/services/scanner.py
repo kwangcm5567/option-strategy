@@ -199,11 +199,43 @@ def _empirical_win_put_buy(down_windows: list[tuple], distance_pct: float) -> fl
     return round(wins / len(down_windows) * 100, 1)
 
 
+# ─── 技术指标辅助（Buy Call timing）────────────────────────────────────────────
+
+def _calc_rsi(closes: pd.Series, period: int = 14) -> float:
+    """RSI-14。数据不足时返回中性值 50.0。"""
+    if len(closes) < period + 1:
+        return 50.0
+    delta = closes.diff()
+    gain  = delta.clip(lower=0).rolling(period).mean()
+    loss  = (-delta.clip(upper=0)).rolling(period).mean()
+    last_loss = float(loss.iloc[-1])
+    rs  = float(gain.iloc[-1]) / last_loss if last_loss > 0 else 100.0
+    rsi = 100.0 - 100.0 / (1.0 + rs)
+    return round(rsi, 1) if not math.isnan(rsi) else 50.0
+
+
+def _calc_macd(closes: pd.Series) -> dict:
+    """MACD 12-26-9。返回 histogram、bullish、accelerating。"""
+    ema12  = closes.ewm(span=12, adjust=False).mean()
+    ema26  = closes.ewm(span=26, adjust=False).mean()
+    macd   = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    hist   = macd - signal
+    h_last = float(hist.iloc[-1])
+    h_prev = float(hist.iloc[-2]) if len(hist) >= 2 else h_last
+    return {
+        "histogram":    round(h_last, 4),
+        "bullish":      h_last > 0,
+        "accelerating": h_last > h_prev,
+    }
+
+
 # ─── 综合评分算法 ─────────────────────────────────────────────────────────────
 
 def _score(opt: dict) -> float:
     """
-    机构级评分：卖方策略以 ROC / IV溢价 / σ-距离甜点 为核心权重。
+    机构级评分：卖方策略以 ROC / IV溢价 / σ-距离甜点 为核心权重；
+    买方策略以 技术时机（RSI/MACD/趋势）/ IV 便宜度 / Delta 甜点 为核心权重。
     """
     strategy = opt.get("strategy", "sell_put")
     liq = opt.get("liquidityScore", 5) / 10
@@ -257,25 +289,41 @@ def _score(opt: dict) -> float:
             + liq * 0.10
         )
 
-    # 买方策略：偏好高 Delta、低 IV（买方有利时进场）
-    delta_abs = abs(opt.get("delta") or 0.50)
-    pop_e = (opt.get("popEmpirical") or 30) / 100
-    iv_rank = opt.get("ivRank", 50) / 100
-    spread_pct = opt.get("bidAskSpreadPct", 10)
+    # ── 买方策略：技术时机主导，IV 便宜度次之 ──
+    # 技术时机（RSI + MACD + 双均线）
+    rsi_val = opt.get("rsi") or 50.0
+    rsi_s = (
+        1.0 if 45 <= rsi_val <= 65 else
+        0.6 if (35 <= rsi_val < 45 or 65 < rsi_val <= 70) else
+        0.2 if rsi_val > 70 else 0.1
+    )
+    macd_s = (
+        1.0 if (opt.get("macdBullish") and opt.get("macdAccel")) else
+        0.7 if opt.get("macdBullish") else 0.3
+    )
+    above50  = opt.get("aboveSma50", False)
+    above200 = opt.get("aboveSma200")
+    trend_s  = 1.0 if (above50 and above200) else 0.65 if above50 else 0.2
+    tech_score = rsi_s * 0.40 + macd_s * 0.35 + trend_s * 0.25
 
-    if delta_abs >= 0.45:
-        delta_score = 1.0
-    elif delta_abs >= 0.30:
-        delta_score = 0.5 + (delta_abs - 0.30) / 0.15 * 0.5
-    else:
-        delta_score = max(0.0, delta_abs / 0.30 * 0.5)
+    # IV 便宜度（买方要低 IV Rank — 期权便宜才买）
+    iv_cheap = 1.0 - min(opt.get("ivRank", 50) / 100.0, 1.0)
+
+    # Delta 甜点（0.35-0.55：足够方向性但不过度高 gamma）
+    delta_abs = abs(opt.get("delta") or 0.40)
+    delta_s = (
+        1.0 if 0.35 <= delta_abs <= 0.55 else
+        0.75 if 0.30 <= delta_abs <= 0.65 else 0.35
+    )
+
+    pop_e = (opt.get("popEmpirical") or 40) / 100
 
     return (
-        delta_score * 0.40
-        + iv_rank * 0.20
-        + pop_e * 0.20
-        + liq * 0.15
-        - min(spread_pct / 100, 0.5) * 0.05
+        tech_score * 0.35
+        + iv_cheap  * 0.25
+        + delta_s   * 0.25
+        + pop_e     * 0.10
+        + liq       * 0.05
     )
 
 
@@ -299,6 +347,9 @@ def _process_row(
     gap_risk_count: int = 0,
     ex_div_date: str | None = None,
     days_to_div: int = 999,
+    rsi: float = 50.0,
+    macd_info: dict | None = None,
+    sma200: float | None = None,
 ) -> dict | None:
     dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
     if dte <= 0:
@@ -504,6 +555,11 @@ def _process_row(
         "stdDistance": std_distance,
         "roc": roc,
         "ivPremium": iv_premium,
+        "rsi": rsi,
+        "macdBullish":   macd_info.get("bullish")      if macd_info else None,
+        "macdAccel":     macd_info.get("accelerating") if macd_info else None,
+        "macdHistogram": macd_info.get("histogram")    if macd_info else None,
+        "aboveSma200":   (current_price >= sma200)     if sma200 is not None else None,
     }
     result["score"] = round(_score(result), 4)
     return result
@@ -541,6 +597,9 @@ def scan_options(
             hist_vol = float(daily_ret.std() * math.sqrt(252))
             sma50 = float(history["Close"].tail(50).mean())
             support_level = float(history["Close"].tail(126).quantile(0.20))
+            rsi       = _calc_rsi(history["Close"])
+            macd_info = _calc_macd(history["Close"])
+            sma200    = float(history["Close"].tail(200).mean()) if len(history) >= 200 else None
 
             days_to_earnings = earnings_map.get(symbol, 999)
             earnings_date_str = (
@@ -600,6 +659,9 @@ def scan_options(
                             gap_risk_count=gap_risk_count,
                             ex_div_date=ex_div_date,
                             days_to_div=days_to_div,
+                            rsi=rsi,
+                            macd_info=macd_info,
+                            sma200=sma200,
                         )
                         if item:
                             results.append(item)

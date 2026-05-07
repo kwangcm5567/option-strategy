@@ -52,11 +52,17 @@ function getRecommendation(option, newsRisk) {
     if (option.p50 >= 85)            pros.push(`P50 很高（${option.p50}%），适合 50% 止盈策略`);
     if (option.liquidityScore >= 7)  pros.push('流动性良好，可灵活平仓');
   } else {
-    if (option.ivRank <= 25)         pros.push(`IV Rank 低（${option.ivRank}%），买方成本低`);
-    if (option.ivHvRatio != null && option.ivHvRatio <= 0.85) pros.push(`期权折价（IV/HV ${option.ivHvRatio}×），买方占优`);
-    if (option.popEmpirical >= 40)   pros.push(`历史方向胜率 ${option.popEmpirical}%`);
-    if (option.aboveSma50)           pros.push('价格在 50 日均线上方，趋势向上');
-    if (option.distancePct <= 5)     pros.push(`接近 ATM（距 ${option.distancePct}%），Delta 较高`);
+    if (option.rsi != null && option.rsi > 70)                  risks.push(`RSI ${option.rsi} 超买（>70），追高风险大`);
+    if (option.ivRank <= 20)                                     pros.push(`IV Rank ${option.ivRank}%，期权极便宜，买方成本极低`);
+    else if (option.ivRank <= 25)                                pros.push(`IV Rank ${option.ivRank}%，期权便宜，买方占优`);
+    if (option.ivHvRatio != null && option.ivHvRatio <= 0.85)   pros.push(`期权折价（IV/HV ${option.ivHvRatio}×），买方统计优势`);
+    if (option.macdBullish && option.macdAccel)                  pros.push('MACD 正向加速，趋势确认');
+    else if (option.macdBullish)                                 pros.push('MACD 正向，有上行动能');
+    if (option.aboveSma200 && option.aboveSma50)                 pros.push('高于 SMA50 & SMA200，多头格局确认');
+    else if (option.aboveSma50)                                  pros.push('价格在 50 日均线上方，短期趋势向上');
+    if (option.rsi != null && option.rsi >= 45 && option.rsi <= 65) pros.push(`RSI ${option.rsi}，动量健康区间`);
+    if (option.popEmpirical >= 40)                               pros.push(`历史上涨胜率 ${option.popEmpirical}%`);
+    if (option.distancePct <= 5)                                 pros.push(`接近 ATM（距 ${option.distancePct}%），Delta 较高`);
   }
 
   const majorRisks = risks.filter(r =>
@@ -342,6 +348,82 @@ function InstitutionalMetrics({ option }) {
   );
 }
 
+// ─── Buy Call 专业进场评估 ───────────────────────────────────────────────────────
+function calcEntryScore(option, newsRisk) {
+  const rsi = option.rsi ?? 50;
+  const rsiScore   = (rsi >= 45 && rsi <= 65) ? 100 : (rsi >= 35 && rsi <= 70) ? 60 : (rsi > 70) ? 20 : 10;
+  const macdScore  = (option.macdBullish && option.macdAccel) ? 100 : option.macdBullish ? 70 : 30;
+  const trendScore = (option.aboveSma50 && option.aboveSma200) ? 100 : option.aboveSma50 ? 65 : 20;
+  const ivScore    = Math.max(0, 100 - (option.ivRank ?? 50) * 2);
+  const newsScore  = newsRisk?.overallSentiment === '看涨' ? 100
+    : newsRisk?.overallSentiment === '中性' ? 60 : 20;
+  return Math.round(rsiScore * 0.20 + macdScore * 0.20 + trendScore * 0.20 + ivScore * 0.25 + newsScore * 0.15);
+}
+
+function DimRow({ icon, label, score, detail }) {
+  const color = score >= 70 ? '#10b981' : score >= 45 ? '#f59e0b' : '#ef4444';
+  const mark  = score >= 70 ? '✅' : score >= 45 ? '⚠️' : '⛔';
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.32rem 0.6rem', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+      <span style={{ fontSize: '0.73rem', color: 'var(--text-secondary)' }}>{icon} {label}</span>
+      <span style={{ fontSize: '0.78rem', fontWeight: 700, color, textAlign: 'right', maxWidth: '58%' }}>{mark} {detail}</span>
+    </div>
+  );
+}
+
+function BuyCallTimingPanel({ option, newsRisk }) {
+  if (option.strategy !== 'buy_call') return null;
+
+  const score = calcEntryScore(option, newsRisk);
+  const scoreColor = score >= 70 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444';
+  const scoreLabel = score >= 70 ? '良好入场时机' : score >= 50 ? '条件一般，谨慎进场' : '信号不佳，建议等待';
+
+  const rsi = option.rsi ?? 50;
+  const rsiScore   = (rsi >= 45 && rsi <= 65) ? 100 : (rsi >= 35 && rsi <= 70) ? 60 : (rsi > 70) ? 20 : 10;
+  const macdScore  = (option.macdBullish && option.macdAccel) ? 100 : option.macdBullish ? 70 : 30;
+  const trendScore = (option.aboveSma50 && option.aboveSma200) ? 100 : option.aboveSma50 ? 65 : 20;
+  const ivScore    = Math.max(0, 100 - (option.ivRank ?? 50) * 2);
+  const newsScore  = newsRisk?.overallSentiment === '看涨' ? 100 : newsRisk?.overallSentiment === '中性' ? 60 : 20;
+
+  const rsiDetail   = rsi > 70 ? `RSI ${rsi} · 超买区，追高风险` : rsi >= 45 ? `RSI ${rsi} · 动量健康（45-65甜点）` : `RSI ${rsi} · 动量偏弱`;
+  const macdDetail  = (option.macdBullish && option.macdAccel) ? 'MACD 正向加速 · 趋势确认强' : option.macdBullish ? 'MACD 正向 · 上行动能' : 'MACD 负向 · 动能不足';
+  const trendDetail = (option.aboveSma50 && option.aboveSma200) ? '高于SMA50 & SMA200 · 多头格局' : option.aboveSma50 ? '高于SMA50 · 未确认长期趋势' : '低于SMA50 · 趋势不明';
+  const ivDetail    = (option.ivRank ?? 50) <= 25 ? `IV Rank ${option.ivRank}% · 期权便宜，买方占优` : `IV Rank ${option.ivRank}% · 期权较贵，成本偏高`;
+  const newsDetail  = newsRisk ? `${newsRisk.overallSentiment} · ${newsRisk.riskLevel === '高' ? '高风险' : newsRisk.riskLevel === '中' ? '需关注' : '情绪稳定'}` : '加载中…';
+
+  const stopLossPx  = option.premium != null ? (option.premium * 0.5).toFixed(2) : '—';
+  const targetPx    = option.premium != null ? (option.premium * 2.0).toFixed(2) : '—';
+
+  return (
+    <div style={{ background: 'rgba(139,92,246,0.05)', borderRadius: '8px', overflow: 'hidden', marginBottom: '0.75rem', border: '1px solid rgba(139,92,246,0.2)' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.45rem 0.6rem', background: 'rgba(139,92,246,0.1)', borderBottom: '1px solid rgba(139,92,246,0.2)' }}>
+        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#a78bfa' }}>📈 买入 Call — 专业进场评估</span>
+        <span style={{ fontSize: '0.82rem', fontWeight: 800, color: scoreColor }}>
+          {score}/100 · {scoreLabel}
+        </span>
+      </div>
+
+      {/* 五维度 */}
+      <DimRow icon="📉" label="IV 环境" score={ivScore}    detail={ivDetail} />
+      <DimRow icon="📈" label="价格趋势" score={trendScore} detail={trendDetail} />
+      <DimRow icon="⚡" label="动量 (RSI)" score={rsiScore} detail={rsiDetail} />
+      <DimRow icon="〰️" label="MACD"      score={macdScore} detail={macdDetail} />
+      <DimRow icon="📰" label="新闻情绪"  score={newsScore} detail={newsDetail} />
+
+      {/* 止盈止损建议 */}
+      <div style={{ padding: '0.45rem 0.6rem', borderTop: '1px solid rgba(139,92,246,0.15)', background: 'rgba(0,0,0,0.1)', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '0.71rem', color: '#10b981' }}>
+          💡 止盈：权利金 +100%（${ targetPx}）或 DTE &lt; 21 天时平仓
+        </span>
+        <span style={{ fontSize: '0.71rem', color: '#ef4444' }}>
+          🛑 止损：权利金 -50%（${stopLossPx}）
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 export default function OptionCard({ option, onClick }) {
   const [newsRisk, setNewsRisk] = useState(null);
@@ -509,6 +591,9 @@ export default function OptionCard({ option, onClick }) {
 
       {/* ── 关键价位表 ── */}
       <KeyLevels option={option} />
+
+      {/* ── Buy Call 专业进场评估（仅 buy_call 显示）── */}
+      <BuyCallTimingPanel option={option} newsRisk={newsRisk} />
 
       {/* ── 机构标准评估 ── */}
       <InstitutionalMetrics option={option} />

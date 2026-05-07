@@ -239,22 +239,43 @@ export default function ScannerTab() {
           <span style={{ fontSize: '0.7rem', color: '#60a5fa', background: 'rgba(59,130,246,0.12)', padding: '0.1rem 0.5rem', borderRadius: '999px', border: '1px solid rgba(96,165,250,0.25)' }}>已激活</span>
           <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{showStandards ? '▲ 收起' : '▼ 展开'}</span>
         </button>
-        {showStandards && (
-          <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(195px, 1fr))', gap: '0.6rem' }}>
-            {[
-              { label: 'σ-距离 ≥ 1.0σ', desc: '行权价须超出市场预期波动幅度，甜点在 1.2σ（约 Delta 0.20）', color: '#10b981' },
-              { label: '|Δ| 0.10 – 0.40', desc: 'Delta 甜点区间，兼顾方向性敞口与安全边际', color: '#60a5fa' },
-              { label: '历史胜率 ≥ 70%', desc: '1年滚动回测安全窗口 ≥ 70%，机构级确定性最低门槛', color: '#f59e0b' },
-              { label: 'ROC ≤ 40%', desc: '年化资本回报率上限，过高意味着隐含风险超出合理范围', color: '#a78bfa' },
-              { label: '年化回报 8–80%', desc: '筛除无套利价值的低回报期权与极端高风险期权', color: '#fb7185' },
-            ].map(item => (
-              <div key={item.label} style={{ padding: '0.5rem 0.65rem', background: 'rgba(255,255,255,0.03)', borderRadius: '7px', borderLeft: `3px solid ${item.color}55` }}>
-                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: item.color, marginBottom: '0.2rem' }}>{item.label}</div>
-                <div style={{ fontSize: '0.71rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>{item.desc}</div>
+        {showStandards && (() => {
+          const hasSell = selectedStrategies.some(s => s.startsWith('sell_'));
+          const hasBuy  = selectedStrategies.includes('buy_call') || selectedStrategies.includes('buy_put');
+          const sellStds = [
+            { label: 'σ-距离 ≥ 1.0σ', desc: '行权价须超出预期波动幅度，甜点在 1.2σ（约 Delta 0.20）', color: '#10b981' },
+            { label: '|Δ| 0.10 – 0.40', desc: 'Delta 甜点区间，兼顾安全边际与权利金回报', color: '#60a5fa' },
+            { label: '历史胜率 ≥ 70%', desc: '1年回测安全窗口 ≥ 70%，机构级确定性门槛', color: '#f59e0b' },
+            { label: 'ROC ≤ 40%', desc: '年化资本回报率上限，过高意味着隐含风险过大', color: '#a78bfa' },
+            { label: '年化回报 8–80%', desc: '筛除无意义低回报与极端高风险期权', color: '#fb7185' },
+          ];
+          const buyStds = [
+            { label: 'IV Rank ≤ 25%', desc: '期权便宜时买入，不为 IV 溢价买单（买方核心时机）', color: '#8b5cf6' },
+            { label: 'RSI 45–65', desc: '动量健康区间，避免超买（>70）追涨；<35 等反转确认', color: '#60a5fa' },
+            { label: 'MACD 正向扩张', desc: '趋势向上确认，避免在动能衰竭时买入', color: '#10b981' },
+            { label: '高于 SMA50 + SMA200', desc: '双均线确认多头格局，降低逆势建仓风险', color: '#f59e0b' },
+            { label: 'Delta 0.35–0.55', desc: '足够方向性敞口，不过度依赖极端波动才获利', color: '#fb7185' },
+          ];
+          const StdGrid = ({ items, title, titleColor }) => (
+            <div>
+              {title && <div style={{ fontSize: '0.72rem', fontWeight: 700, color: titleColor, marginBottom: '0.4rem', marginTop: '0.5rem' }}>{title}</div>}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(185px, 1fr))', gap: '0.6rem' }}>
+                {items.map(item => (
+                  <div key={item.label} style={{ padding: '0.5rem 0.65rem', background: 'rgba(255,255,255,0.03)', borderRadius: '7px', borderLeft: `3px solid ${item.color}55` }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: item.color, marginBottom: '0.2rem' }}>{item.label}</div>
+                    <div style={{ fontSize: '0.71rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>{item.desc}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        )}
+            </div>
+          );
+          return (
+            <div style={{ marginTop: '0.75rem' }}>
+              {hasSell && <StdGrid items={sellStds} title={hasBuy ? '📐 卖出策略标准（Sell Put / Sell Call）' : null} titleColor="#10b981" />}
+              {hasBuy  && <StdGrid items={buyStds}  title={hasSell ? '📈 买入策略标准（Buy Call）' : null}            titleColor="#8b5cf6" />}
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── 内容区 ── */}
