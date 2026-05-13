@@ -18,15 +18,19 @@ logger = logging.getLogger(__name__)
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 
 TICKERS = [
-    # Mega-cap tech & growth
+    # Mega-cap tech & growth（高流动性，IV 充足）
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "CRM", "NFLX",
     "AVGO", "AMD", "ORCL", "ADBE", "CSCO", "INTC", "QCOM", "NOW", "UBER",
+    # 大型 ETF（必加：OI 百万级，任何 IV 环境都能出结果）
+    "SPY", "QQQ", "IWM", "GLD",
+    # 高 IV 单股（加密/数据中心相关，低 VIX 时也能通过年化收益过滤）
+    "COIN", "MSTR", "SMCI",
     # Financials
     "JPM", "V", "BAC", "GS", "MS", "WFC", "BLK", "SCHW",
-    # Healthcare
-    "UNH", "JNJ", "LLY", "ABBV", "MRK", "PFE", "TMO",
-    # Consumer staples & discretionary
-    "PG", "KO", "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "TGT", "DIS",
+    # Healthcare（保留 IV 较高的，删除低 IV 的 JNJ PFE MRK）
+    "UNH", "LLY", "ABBV", "TMO",
+    # Consumer（保留 IV 较高的，删除低 IV 防御股 KO PG WMT MCD）
+    "COST", "HD", "NKE", "SBUX", "TGT", "DIS",
     # Energy
     "XOM", "CVX", "SLB",
     # Industrials & materials
@@ -724,6 +728,9 @@ def scan_options(
         }
         for fut in as_completed(futures):
             results.extend(fut.result())
+
+    if min_iv_rank > 0:
+        results = [r for r in results if (r.get("ivRank") or 0) >= min_iv_rank]
 
     results.sort(key=lambda x: x["score"], reverse=True)
 

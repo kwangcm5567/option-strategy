@@ -10,16 +10,16 @@ import { TIPS } from '../../constants/tooltips';
 // ── 首次扫描专用 Loading（仅在没有任何数据时显示）────────────────────────────
 const SCAN_STEPS = [
   '正在连接 Yahoo Finance 数据源…',
-  '正在获取 AAPL / MSFT / NVDA 期权链…',
-  '正在获取 AMZN / TSLA / GOOGL 期权链…',
-  '正在获取 META / JPM / V 期权链…',
-  '正在获取 JNJ / UNH / XOM 期权链…',
-  '正在获取 CVX / PG / KO 期权链…',
-  '正在获取 HD / COST / ABBV 期权链…',
-  '正在获取 CRM / NFLX 期权链…',
+  '正在获取 SPY / QQQ / IWM ETF 期权链…',
+  '正在获取 AAPL / MSFT / NVDA / AMZN 期权链…',
+  '正在获取 TSLA / META / GOOGL / COIN 期权链…',
+  '正在获取 MSTR / SMCI / AMD / NVDA 期权链…',
+  '正在获取 JPM / GS / BAC / V 期权链…',
+  '正在获取 ABBV / UNH / LLY / TMO 期权链…',
+  '正在获取 HD / COST / NKE / DIS 期权链…',
   '正在运行历史回测（2 年滚动窗口）…',
   '正在用 Black-Scholes 计算 Greeks…',
-  '正在计算 IV Rank / 预期波动区间…',
+  '正在计算 IV 百分位 / 预期波动区间…',
   '正在过滤和排序结果，快好了…',
 ];
 
