@@ -136,7 +136,7 @@ function IVRankBar({ value, ivHvRatio }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '3px', color: 'var(--text-secondary)' }}>
-        <span>IV Rank</span>
+        <span>IV 百分位</span>
         <span style={{ color }}>{value}% · {label}</span>
       </div>
       <div style={{ height: '5px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
@@ -321,7 +321,8 @@ function InstitutionalMetrics({ option }) {
       {stdDist != null && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0.6rem' }}>
           <span style={{ fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
-            σ-距离 <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>（预期波动倍数，甜点 1.2σ）</span>
+            <Tooltip text={TIPS.stdDistance} width={300}><span>σ-距离 ⓘ</span></Tooltip>
+            <span style={{ fontSize: '0.65rem', opacity: 0.7 }}> （甜点 1.2σ）</span>
           </span>
           <span style={{ fontSize: '0.82rem', fontWeight: 700, color: stdDistColor }}>{stdDistLabel || `${stdDist}σ`}</span>
         </div>
@@ -329,7 +330,8 @@ function InstitutionalMetrics({ option }) {
       {roc != null && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0.6rem', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
           <span style={{ fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
-            ROC <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>（权利金/最大亏损 年化，目标 15-25%）</span>
+            <Tooltip text={TIPS.roc} width={300}><span>ROC ⓘ</span></Tooltip>
+            <span style={{ fontSize: '0.65rem', opacity: 0.7 }}> （目标 15-25%）</span>
           </span>
           <span style={{ fontSize: '0.82rem', fontWeight: 700, color: rocColor }}>{roc.toFixed(1)}%{rocLabel && ` · ${rocLabel}`}</span>
         </div>
@@ -337,7 +339,8 @@ function InstitutionalMetrics({ option }) {
       {ivPrem != null && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0.6rem', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
           <span style={{ fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
-            IV溢价 <span style={{ fontSize: '0.65rem', opacity: 0.7 }}>（相对历史波动率，正值卖方有利）</span>
+            <Tooltip text={TIPS.ivPremium} width={300}><span>IV溢价 ⓘ</span></Tooltip>
+            <span style={{ fontSize: '0.65rem', opacity: 0.7 }}> （正值卖方有利）</span>
           </span>
           <span style={{ fontSize: '0.82rem', fontWeight: 700, color: ivPremColor }}>
             {ivPrem > 0 ? '+' : ''}{ivPrem.toFixed(1)}%{ivPremLabel && ` · ${ivPremLabel}`}

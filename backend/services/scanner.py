@@ -1,8 +1,10 @@
 """
 期权扫描核心逻辑：支持 sell_put / buy_call / sell_call / buy_put 四种策略。
 """
+import logging
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -11,12 +13,26 @@ import yfinance as yf
 
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
 
+logger = logging.getLogger(__name__)
+
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
 
 TICKERS = [
-    "AAPL", "MSFT", "NVDA", "JPM", "V", "JNJ", "UNH",
-    "AMZN", "TSLA", "GOOGL", "META", "XOM", "CVX",
-    "PG", "KO", "HD", "COST", "ABBV", "CRM", "NFLX",
+    # Mega-cap tech & growth
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "CRM", "NFLX",
+    "AVGO", "AMD", "ORCL", "ADBE", "CSCO", "INTC", "QCOM", "NOW", "UBER",
+    # Financials
+    "JPM", "V", "BAC", "GS", "MS", "WFC", "BLK", "SCHW",
+    # Healthcare
+    "UNH", "JNJ", "LLY", "ABBV", "MRK", "PFE", "TMO",
+    # Consumer staples & discretionary
+    "PG", "KO", "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "TGT", "DIS",
+    # Energy
+    "XOM", "CVX", "SLB",
+    # Industrials & materials
+    "BA", "CAT", "GE", "LIN",
+    # Other large-cap
+    "BX", "PLTR",
 ]
 
 # ─── 批量拉取财报日期（FMP 优先，yfinance fallback）────────────────────────
@@ -580,6 +596,104 @@ def _process_row(
     return result
 
 
+# ─── 单只 ticker 处理（供并发调用）──────────────────────────────────────────
+
+def _process_ticker(
+    symbol: str,
+    strategies: list[str],
+    today: datetime,
+    dte_min: int,
+    dte_max: int,
+    earnings_map: dict,
+    dividend_map: dict,
+    needs_down: bool,
+    needs_up: bool,
+) -> list[dict]:
+    try:
+        ticker = yf.Ticker(symbol)
+        history = ticker.history(period="1y")
+        if history.empty:
+            return []
+
+        current_price = float(history["Close"].iloc[-1])
+        daily_ret = history["Close"].pct_change().dropna()
+        hist_vol = float(daily_ret.std() * math.sqrt(252))
+        sma50 = float(history["Close"].tail(50).mean())
+        support_level = float(history["Close"].tail(126).quantile(0.20))
+        rsi       = _calc_rsi(history["Close"])
+        macd_info = _calc_macd(history["Close"])
+        sma200    = float(history["Close"].tail(200).mean()) if len(history) >= 200 else None
+
+        days_to_earnings = earnings_map.get(symbol, 999)
+        earnings_date_str = (
+            (today + timedelta(days=days_to_earnings)).strftime("%Y-%m-%d")
+            if days_to_earnings < 999 else None
+        )
+
+        ex_div_date = dividend_map.get(symbol)
+        days_to_div = 999
+        if ex_div_date:
+            try:
+                days_to_div = (datetime.strptime(ex_div_date, "%Y-%m-%d") - today).days
+            except ValueError:
+                ex_div_date = None
+
+        gap_risk_count = int((daily_ret < -0.05).sum())
+
+        exp_dates = ticker.options
+
+        valid_dates = []
+        for date_str in exp_dates:
+            dte_check = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
+            if dte_min <= dte_check <= dte_max:
+                valid_dates.append((date_str, dte_check))
+        if not valid_dates:
+            return []
+
+        if len(valid_dates) > 4:
+            indices = [0, len(valid_dates) // 3, len(valid_dates) * 2 // 3, len(valid_dates) - 1]
+            valid_dates = [valid_dates[i] for i in sorted(set(indices))]
+
+        rep_dte = valid_dates[len(valid_dates) // 2][1]
+        down_win = _precompute_windows(history, rep_dte) if needs_down else None
+        up_win   = _precompute_up_windows(history, rep_dte) if needs_up else None
+
+        results = []
+        for date_str, dte_val in valid_dates:
+            try:
+                chain = ticker.option_chain(date_str)
+            except Exception as e:
+                logger.warning("[scanner] %s %s option_chain 失败: %s", symbol, date_str, e)
+                continue
+
+            for strategy in strategies:
+                rows = chain.puts if strategy in ("sell_put", "buy_put") else chain.calls
+                for _, row in rows.iterrows():
+                    item = _process_row(
+                        row, symbol, current_price, history,
+                        hist_vol, support_level, sma50,
+                        strategy, date_str, today,
+                        down_windows=down_win,
+                        up_windows=up_win,
+                        earnings_date_str=earnings_date_str,
+                        days_to_earnings=days_to_earnings,
+                        gap_risk_count=gap_risk_count,
+                        ex_div_date=ex_div_date,
+                        days_to_div=days_to_div,
+                        rsi=rsi,
+                        macd_info=macd_info,
+                        sma200=sma200,
+                    )
+                    if item:
+                        results.append(item)
+
+        return results
+
+    except Exception as e:
+        logger.warning("[scanner] %s 错误: %s", symbol, e)
+        return []
+
+
 # ─── 主扫描函数 ───────────────────────────────────────────────────────────────
 
 def scan_options(
@@ -592,115 +706,35 @@ def scan_options(
         strategies = ["sell_put"]
 
     today = datetime.now()
-    results = []
-
     earnings_map = _fetch_earnings_map()
     dividend_map = _fetch_dividend_map()
 
     needs_down = any(s in strategies for s in ("sell_put", "buy_put"))
     needs_up   = any(s in strategies for s in ("buy_call", "sell_call"))
 
-    for symbol in TICKERS:
-        try:
-            ticker = yf.Ticker(symbol)
-            history = ticker.history(period="1y")
-            if history.empty:
-                continue
-
-            current_price = float(history["Close"].iloc[-1])
-            daily_ret = history["Close"].pct_change().dropna()
-            hist_vol = float(daily_ret.std() * math.sqrt(252))
-            sma50 = float(history["Close"].tail(50).mean())
-            support_level = float(history["Close"].tail(126).quantile(0.20))
-            rsi       = _calc_rsi(history["Close"])
-            macd_info = _calc_macd(history["Close"])
-            sma200    = float(history["Close"].tail(200).mean()) if len(history) >= 200 else None
-
-            days_to_earnings = earnings_map.get(symbol, 999)
-            earnings_date_str = (
-                (today + timedelta(days=days_to_earnings)).strftime("%Y-%m-%d")
-                if days_to_earnings < 999 else None
-            )
-
-            ex_div_date = dividend_map.get(symbol)
-            days_to_div = 999
-            if ex_div_date:
-                try:
-                    days_to_div = (datetime.strptime(ex_div_date, "%Y-%m-%d") - today).days
-                except ValueError:
-                    ex_div_date = None
-
-            gap_risk_count = int((daily_ret < -0.05).sum())
-
-            exp_dates = ticker.options
-
-            # 先筛出有效到期日，并限制最多 4 个（避免每只股票 8+ 次 option_chain API 调用）
-            valid_dates = []
-            for date_str in exp_dates:
-                dte_check = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
-                if dte_min <= dte_check <= dte_max:
-                    valid_dates.append((date_str, dte_check))
-            if not valid_dates:
-                continue
-
-            # 取最多 4 个到期日（首、中前、中后、末），覆盖短中长期
-            if len(valid_dates) > 4:
-                indices = [0, len(valid_dates) // 3, len(valid_dates) * 2 // 3, len(valid_dates) - 1]
-                valid_dates = [valid_dates[i] for i in sorted(set(indices))]
-
-            # 用中位数 DTE 预计算历史窗口（一次/股票，不再每个到期日重复）
-            rep_dte = valid_dates[len(valid_dates) // 2][1]
-            down_win = _precompute_windows(history, rep_dte) if needs_down else None
-            up_win   = _precompute_up_windows(history, rep_dte) if needs_up else None
-
-            for date_str, dte_val in valid_dates:
-                try:
-                    chain = ticker.option_chain(date_str)
-                except Exception as e:
-                    print(f"[scanner] {symbol} {date_str} option_chain 失败: {e}")
-                    continue
-
-                for strategy in strategies:
-                    rows = chain.puts if strategy in ("sell_put", "buy_put") else chain.calls
-                    for _, row in rows.iterrows():
-                        item = _process_row(
-                            row, symbol, current_price, history,
-                            hist_vol, support_level, sma50,
-                            strategy, date_str, today,
-                            down_windows=down_win,
-                            up_windows=up_win,
-                            earnings_date_str=earnings_date_str,
-                            days_to_earnings=days_to_earnings,
-                            gap_risk_count=gap_risk_count,
-                            ex_div_date=ex_div_date,
-                            days_to_div=days_to_div,
-                            rsi=rsi,
-                            macd_info=macd_info,
-                            sma200=sma200,
-                        )
-                        if item:
-                            results.append(item)
-
-        except Exception as e:
-            print(f"[scanner] {symbol} 错误: {e}")
-            continue
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(
+                _process_ticker,
+                sym, strategies, today, dte_min, dte_max,
+                earnings_map, dividend_map, needs_down, needs_up,
+            ): sym
+            for sym in TICKERS
+        }
+        for fut in as_completed(futures):
+            results.extend(fut.result())
 
     results.sort(key=lambda x: x["score"], reverse=True)
 
-    seen = set()
-    top = []
+    seen: set[tuple] = set()
+    top: list[dict] = []
     for r in results:
         key = (r["symbol"], r["strategy"])
         if key not in seen:
             top.append(r)
             seen.add(key)
-        if len(top) >= 30:
-            break
-
-    for r in results:
-        if r not in top:
-            top.append(r)
-        if len(top) >= 30:
+        if len(top) >= 50:
             break
 
     return top

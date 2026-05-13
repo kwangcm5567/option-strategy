@@ -146,12 +146,12 @@ export default function ScannerTab() {
     <div style={{ animation: 'fadeInUp 0.4s ease-out' }}>
 
       {/* ── 筛选控制栏 ── */}
-      <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', flexWrap: 'wrap', gap: '1.25rem', alignItems: 'center' }}>
+      <div className="glass-panel scanner-filter-bar" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', flexWrap: 'wrap', gap: '1.25rem', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
           <Filter size={15} /> 筛选
         </div>
 
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <div className="scanner-strategy-buttons" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           {STRATEGY_OPTIONS.map(({ value, label, tip }) => (
             <Tooltip key={value} text={tip} width={280}>
               <button
@@ -318,9 +318,31 @@ export default function ScannerTab() {
                 </button>
               </div>
             ) : (
-              <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem', fontSize: '0.9rem' }}>
-                当前市场条件不满足筛选标准，尝试放宽条件或点击刷新。
-              </p>
+              <div style={{ marginTop: '0.75rem' }}>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '0.75rem' }}>
+                  当前过滤条件下无结果，以下原因可能导致此问题：
+                </p>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                  {dteMax - dteMin < 14 && (
+                    <li style={{ color: '#fbbf24', fontSize: '0.85rem' }}>
+                      ⚠ DTE 范围过窄（{dteMin}–{dteMax} 天），建议至少保留 14 天跨度
+                    </li>
+                  )}
+                  {minIvRank > 30 && (
+                    <li style={{ color: '#fbbf24', fontSize: '0.85rem' }}>
+                      ⚠ 最低 IV Rank 设为 {minIvRank}%，过滤掉了大量低波动期权，可尝试降至 0
+                    </li>
+                  )}
+                  {selectedStrategies.some(s => s.startsWith('buy_')) && (
+                    <li style={{ color: '#a78bfa', fontSize: '0.85rem' }}>
+                      ℹ 买入策略（buy_call / buy_put）要求 HV &gt; IV 且波动率边际，满足条件的标的较少
+                    </li>
+                  )}
+                  <li style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                    ℹ 期权扫描需符合σ距离、年化收益率、Delta 等机构级筛选标准；市场平静期结果会减少
+                  </li>
+                </ul>
+              </div>
             )}
           </div>
         ) : (

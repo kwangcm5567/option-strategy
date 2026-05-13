@@ -308,7 +308,7 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
       )}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'center', flex: 1 }}>
+        <div className="position-card-metrics" style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'center', flex: 1 }}>
           {/* 标的 + 策略 */}
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -367,7 +367,7 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
         </div>
 
         {/* 操作按钮 */}
-        <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
+        <div className="position-card-actions" style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
           <button
             onClick={() => onClose(pos)}
             style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', color: '#10b981', padding: '0.4rem 0.7rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}
@@ -455,6 +455,33 @@ function ClosedSection({ positions }) {
       )}
     </div>
   );
+}
+
+// ── CSV 导出 ──────────────────────────────────────────────────────────────────
+
+function exportPositionsCsv(positions) {
+  const stratLabel = (s) => STRATEGIES.find(x => x.value === s)?.label ?? s;
+  const headers = ['代号', '策略', '行权价', '开仓权利金/股', '到期日', '合约数', '开仓日期', '已实现盈亏', '状态', '备注'];
+  const rows = positions.map(p => [
+    p.symbol,
+    stratLabel(p.strategy),
+    p.strike,
+    p.premium,
+    p.expiration_date,
+    p.quantity,
+    p.open_date ?? '',
+    p.realized_pnl ?? '',
+    p.status,
+    (p.notes ?? '').replace(/,/g, '，'),
+  ]);
+  const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `positions_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ── 主组件 ───────────────────────────────────────────────────────────────────
@@ -571,16 +598,30 @@ export default function PositionsTab() {
             {pnlLoading && <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#60a5fa' }}>⟳ 刷新中…</span>}
           </p>
         </div>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '0.4rem',
-            background: 'rgba(59,130,246,0.2)', border: '1px solid rgba(96,165,250,0.4)',
-            color: '#60a5fa', padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600,
-          }}
-        >
-          <Plus size={15} /> 新增持仓
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {allPositions.length > 0 && (
+            <button
+              onClick={() => exportPositionsCsv(allPositions)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '0.4rem',
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
+                color: 'var(--text-secondary)', padding: '0.5rem 0.85rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem',
+              }}
+            >
+              ↓ 导出 CSV
+            </button>
+          )}
+          <button
+            onClick={() => setShowForm(v => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              background: 'rgba(59,130,246,0.2)', border: '1px solid rgba(96,165,250,0.4)',
+              color: '#60a5fa', padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600,
+            }}
+          >
+            <Plus size={15} /> 新增持仓
+          </button>
+        </div>
       </div>
 
       {error && <ErrorBox message={error} />}
