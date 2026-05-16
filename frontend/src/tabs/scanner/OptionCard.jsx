@@ -428,7 +428,7 @@ function BuyCallTimingPanel({ option, newsRisk }) {
 }
 
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
-export default function OptionCard({ option, onClick }) {
+export default function OptionCard({ option, onClick, accountSize = 0 }) {
   const [newsRisk, setNewsRisk] = useState(null);
 
   useEffect(() => {
@@ -600,6 +600,26 @@ export default function OptionCard({ option, onClick }) {
 
       {/* ── 机构标准评估 ── */}
       <InstitutionalMetrics option={option} />
+
+      {/* ── 仓位建议（Kelly 2% 法则）── */}
+      {accountSize > 0 && (() => {
+        const maxLossPerContract = option.capitalRequired ?? (option.strike * 100);
+        const riskBudget = accountSize * 0.02;
+        const suggested = Math.max(1, Math.floor(riskBudget / maxLossPerContract));
+        const capitalUsed = suggested * maxLossPerContract;
+        const pct = Math.round(capitalUsed / accountSize * 100);
+        return (
+          <div style={{ background: 'rgba(96,165,250,0.06)', border: '1px solid rgba(96,165,250,0.15)', borderRadius: 8, padding: '0.4rem 0.65rem', marginBottom: '0.75rem', fontSize: '0.78rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>💡 仓位建议（2% 风险法则）</span>
+              <span style={{ fontWeight: 700, color: '#60a5fa' }}>{suggested} 张</span>
+            </div>
+            <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>
+              占用保证金 ${capitalUsed.toLocaleString()} · 账户 {pct}%
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── 流动性 ── */}
       {option.liquidityScore != null && (

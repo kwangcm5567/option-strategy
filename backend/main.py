@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
-from routers import scanner, chain, positions, market, earnings, news, portfolio
+from routers import scanner, chain, positions, market, earnings, news, portfolio, analytics
 from services import cache as cache_svc
 
 _start_time = time.time()
@@ -27,6 +27,7 @@ app.include_router(market.router)
 app.include_router(earnings.router)
 app.include_router(news.router)
 app.include_router(portfolio.router)
+app.include_router(analytics.router)
 
 
 @app.get("/")

@@ -99,6 +99,8 @@ function buildEndpoint(strategies, dteMin, dteMax, ivRank) {
   return `/api/scan?strategies=${encodeURIComponent(s)}&dte_min=${dteMin}&dte_max=${dteMax}&min_iv_rank=${ivRank}`;
 }
 
+const LS_ACCOUNT_KEY = 'alpha_account_size';
+
 export default function ScannerTab() {
   const [selectedStrategies, setSelectedStrategies] = useState(['sell_put']);
   const [dteMin, setDteMin] = useState(7);
@@ -108,6 +110,12 @@ export default function ScannerTab() {
   const [showStandards, setShowStandards] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
   const [lastGoodOptions, setLastGoodOptions] = useState([]);
+  const [accountSize, setAccountSize] = useState(() => parseFloat(localStorage.getItem(LS_ACCOUNT_KEY) || '0'));
+
+  const saveAccountSize = (v) => {
+    setAccountSize(v);
+    localStorage.setItem(LS_ACCOUNT_KEY, String(v));
+  };
 
   const endpoint = buildEndpoint(selectedStrategies, dteMin, dteMax, minIvRank);
   const { data, loading, error, refetch } = useApi(endpoint, { timeout: 180_000 });
@@ -216,6 +224,19 @@ export default function ScannerTab() {
           <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', paddingLeft: '4px' }}>
             点击切换：财报前期权风险较高
           </span>
+        </div>
+
+        {/* 账户规模（仓位建议基准） */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+          <Tooltip text="设置账户规模后，每张期权卡片将显示建议合约数（单笔风险 ≤ 账户 2%）。">
+            <span>账户规模</span>
+          </Tooltip>
+          <span>$</span>
+          <input type="number" min={0} step={1000} value={accountSize || ''}
+            placeholder="50000"
+            onChange={e => saveAccountSize(+e.target.value)}
+            style={{ width: '80px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'var(--text-primary)', padding: '0.2rem 0.4rem', textAlign: 'right', fontSize: '0.82rem' }}
+          />
         </div>
 
         <button
@@ -365,6 +386,7 @@ export default function ScannerTab() {
                   key={`${opt.symbol}-${opt.strategy}-${i}`}
                   option={opt}
                   onClick={() => setSelectedOption(opt)}
+                  accountSize={accountSize}
                 />
               ))}
             </div>

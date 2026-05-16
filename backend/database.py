@@ -39,11 +39,13 @@ def init_db():
         # 为旧表补齐新列（迁移兼容）
         existing = {row[1] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
         for col, definition in [
-            ("status",       "TEXT NOT NULL DEFAULT 'open'"),
-            ("exit_premium", "REAL"),
-            ("exit_date",    "TEXT"),
-            ("realized_pnl", "REAL"),
-            ("close_reason", "TEXT"),
+            ("status",           "TEXT NOT NULL DEFAULT 'open'"),
+            ("exit_premium",     "REAL"),
+            ("exit_date",        "TEXT"),
+            ("realized_pnl",     "REAL"),
+            ("close_reason",     "TEXT"),
+            ("wheel_cycle_id",   "INTEGER"),
+            ("protection_strike","REAL"),
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {definition}")

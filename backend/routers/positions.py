@@ -98,6 +98,8 @@ class PositionIn(BaseModel):
     expiration_date: str
     open_date: str
     notes: str = ""
+    wheel_cycle_id: Optional[int] = None
+    protection_strike: Optional[float] = None
 
 
 class ClosePositionIn(BaseModel):
@@ -121,11 +123,13 @@ def add_position(pos: PositionIn):
         cur = conn.execute(
             """
             INSERT INTO positions (symbol, strategy, strike, premium, quantity,
-                                   expiration_date, open_date, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   expiration_date, open_date, notes,
+                                   wheel_cycle_id, protection_strike)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (pos.symbol.upper(), pos.strategy, pos.strike, pos.premium,
-             pos.quantity, pos.expiration_date, pos.open_date, pos.notes),
+             pos.quantity, pos.expiration_date, pos.open_date, pos.notes,
+             pos.wheel_cycle_id, pos.protection_strike),
         )
         conn.commit()
         new_id = cur.lastrowid
@@ -184,6 +188,27 @@ def close_position(position_id: int, body: ClosePositionIn):
         )
         conn.commit()
     return {"ok": True, "realized_pnl": realized}
+
+
+@router.post("/api/positions/{position_id}/assign-to-wheel")
+def assign_to_wheel(position_id: int):
+    """将被行权的 Put 关联到一个新的 Wheel 循环，返回 wheel_cycle_id。
+    如果该 Put 已有 wheel_cycle_id 则直接返回现有 ID。"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到该持仓记录")
+        pos = dict(row)
+        if pos.get("wheel_cycle_id"):
+            return {"wheel_cycle_id": pos["wheel_cycle_id"]}
+        # 新建 cycle：以 position_id 本身作为 cycle_id（简单唯一性保证）
+        cycle_id = position_id
+        conn.execute(
+            "UPDATE positions SET wheel_cycle_id=? WHERE id=?",
+            (cycle_id, position_id),
+        )
+        conn.commit()
+    return {"wheel_cycle_id": cycle_id}
 
 
 # ── 实时 PnL ─────────────────────────────────────────────────────────────────

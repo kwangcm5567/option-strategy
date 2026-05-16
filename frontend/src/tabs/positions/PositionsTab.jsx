@@ -24,6 +24,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const emptyForm = {
   symbol: '', strategy: 'sell_put', strike: '', premium: '',
   quantity: 1, expiration_date: '', open_date: today(), notes: '',
+  wheel_cycle_id: '', protection_strike: '',
 };
 
 const SELL_STRATEGIES = new Set(['sell_put', 'sell_call']);
@@ -65,6 +66,58 @@ function calcScenarioPnl(pnlRows, spotChgPct, ivChgPct) {
     total += dPremium * 100; // per contract
   }
   return total;
+}
+
+// ── 滚仓提醒 ─────────────────────────────────────────────────────────────────
+
+function RollAlert({ symbol, strike, premium, expirationDate }) {
+  const [rollData, setRollData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const dte = Math.max(1, Math.ceil((new Date(expirationDate) - new Date()) / 86400000));
+
+  const fetchRoll = async () => {
+    if (rollData) { setOpen(v => !v); return; }
+    setLoading(true);
+    try {
+      const res = await apiFetch('GET', `/api/simulate-roll/${symbol}?strike=${strike}&premium=${premium}&dte=${dte}`);
+      setRollData(res);
+    } catch {
+      setRollData({ error: '无法获取滚仓方案' });
+    } finally {
+      setLoading(false);
+      setOpen(true);
+    }
+  };
+
+  return (
+    <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', padding: '0.5rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+        <span style={{ color: '#fca5a5' }}>⚠️ 亏损已超过权利金 2×，建议考虑滚仓（Roll Out）</span>
+        <button onClick={fetchRoll} disabled={loading}
+          style={{ background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.4)', color: '#fca5a5', padding: '0.25rem 0.65rem', borderRadius: 6, cursor: 'pointer', fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
+          {loading ? '查询中…' : open ? '收起' : '查看滚仓方案'}
+        </button>
+      </div>
+      {open && rollData && !rollData.error && (
+        <div style={{ marginTop: '0.6rem', padding: '0.5rem 0.65rem', background: 'rgba(0,0,0,0.2)', borderRadius: 6, lineHeight: 1.7 }}>
+          <div style={{ color: '#f59e0b', fontWeight: 600 }}>建议滚仓方案：</div>
+          <div style={{ color: 'var(--text-secondary)' }}>
+            新到期日 <span style={{ color: 'var(--text-primary)' }}>{rollData.newExpiration}</span> ·
+            新行权价 <span style={{ color: 'var(--text-primary)' }}>${rollData.newStrike}</span> ·
+            净权利金 <span style={{ color: rollData.netCredit >= 0 ? '#10b981' : '#ef4444' }}>
+              {rollData.netCredit >= 0 ? '+' : ''}${rollData.netCredit?.toFixed(2)}
+            </span>
+          </div>
+          {rollData.note && <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>{rollData.note}</div>}
+        </div>
+      )}
+      {open && rollData?.error && (
+        <div style={{ marginTop: '0.5rem', color: '#fca5a5', fontSize: '0.78rem' }}>{rollData.error}</div>
+      )}
+    </div>
+  );
 }
 
 // ── 组合 Greeks 面板 ─────────────────────────────────────────────────────────
@@ -296,7 +349,8 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
     : (pos.strategy === 'buy_call' ? pos.strike + pos.premium : pos.strike - pos.premium);
   const stratLabel = STRATEGIES.find(s => s.value === pos.strategy)?.label || pos.strategy;
 
-  const show50Alert = isSell && pnl?.profitProgress >= 50;
+  const show50Alert  = isSell && pnl?.profitProgress >= 50;
+  const showRollAlert = isSell && pnl?.profitProgress != null && pnl.profitProgress <= -100;
 
   return (
     <div className="glass-panel" style={{ padding: '1rem 1.25rem', position: 'relative' }}>
@@ -305,6 +359,10 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
         <div style={{ background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '8px', padding: '0.4rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
           ⚡ 已达最大利润 {pnl.profitProgress.toFixed(0)}%，可考虑提前平仓锁定收益（50% 黄金法则）
         </div>
+      )}
+      {/* 滚仓提醒横幅 */}
+      {showRollAlert && (
+        <RollAlert symbol={pos.symbol} strike={pos.strike} premium={pos.premium} expirationDate={pos.expiration_date} />
       )}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -549,6 +607,8 @@ export default function PositionsTab() {
         strike: parseFloat(form.strike),
         premium: parseFloat(form.premium),
         quantity: parseInt(form.quantity),
+        wheel_cycle_id: form.wheel_cycle_id ? parseInt(form.wheel_cycle_id) : null,
+        protection_strike: form.protection_strike ? parseFloat(form.protection_strike) : null,
       });
       setForm(emptyForm);
       setShowForm(false);
@@ -670,6 +730,16 @@ export default function PositionsTab() {
             <div style={{ marginBottom: '0.75rem' }}>
               <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>备注（可选）</label>
               <input type="text" value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="如：等待财报后波动率下降" style={{ ...inputStyle, width: '100%' }} />
+            </div>
+            <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Wheel 循环 ID（可选）</label>
+                <input type="number" value={form.wheel_cycle_id} onChange={e => setForm(p => ({ ...p, wheel_cycle_id: e.target.value }))} placeholder="关联现有循环" style={{ ...inputStyle, width: '100%' }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>买腿行权价（价差用，可选）</label>
+                <input type="number" step="0.5" value={form.protection_strike} onChange={e => setForm(p => ({ ...p, protection_strike: e.target.value }))} placeholder="Bull Put Spread 保护腿" style={{ ...inputStyle, width: '100%' }} />
+              </div>
             </div>
             <div style={{ display: 'flex', gap: '0.75rem' }}>
               <button type="submit" disabled={submitting} style={{ background: 'rgba(16,185,129,0.2)', border: '1px solid rgba(16,185,129,0.4)', color: '#10b981', padding: '0.5rem 1.25rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
