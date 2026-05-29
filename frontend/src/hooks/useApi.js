@@ -33,7 +33,7 @@ export function useApi(endpoint, { timeout = 90_000 } = {}) {
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        setError('请求被中断。如刚从后台返回，请点击「刷新数据」重试。');
+        setError('请求超时或被中断，请点击「刷新数据」重试。');
       } else {
         setError(err.message);
       }
@@ -48,14 +48,15 @@ export function useApi(endpoint, { timeout = 90_000 } = {}) {
     fetchData(endpoint);
 
     // 手机黑屏 / 切换 app 时浏览器会挂起 fetch 连接。
-    // 页面重新可见且仍在 loading 时，自动重试一次。
+    // 只有在请求信号确实被中断（signal.aborted）时才重试，
+    // 避免打断仍在正常运行的长耗时请求（如扫描）。
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && loadingRef.current) {
-        // 等 2 秒：给可能仍在传输的响应一个机会先到达
-        setTimeout(() => {
-          if (loadingRef.current) fetchData(endpoint);
-        }, 2000);
-      }
+      if (document.visibilityState !== 'visible') return;
+      setTimeout(() => {
+        if (loadingRef.current && abortRef.current?.signal.aborted) {
+          fetchData(endpoint);
+        }
+      }, 2000);
     };
 
     document.addEventListener('visibilitychange', onVisible);
