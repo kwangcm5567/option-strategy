@@ -199,3 +199,51 @@ def get_wheel_cycles():
             cycles[cycle_id]["status"] = "assigned"
 
     return {"data": list(cycles.values())}
+
+
+@router.get("/risk-metrics")
+def get_risk_metrics():
+    """Sharpe Ratio、最大回撤和累计 P&L 曲线（基于月度数据）。"""
+    import math
+    monthly = get_monthly_income()["data"]
+    if not monthly:
+        return {"data": None}
+
+    returns = [m["totalPnl"] for m in monthly]
+    n = len(returns)
+
+    # 累计 P&L 序列（用于回撤计算和折线图）
+    cum = 0.0
+    cumulative_series = []
+    for m in monthly:
+        cum += m["totalPnl"]
+        cumulative_series.append({"month": m["month"], "cumulative": round(cum, 2)})
+
+    # 最大回撤
+    peak = -math.inf
+    max_dd = 0.0
+    for c in (d["cumulative"] for d in cumulative_series):
+        if c > peak:
+            peak = c
+        dd = peak - c
+        if dd > max_dd:
+            max_dd = dd
+
+    # Sharpe（月度绝对收益，年化，需 ≥3 个月）
+    sharpe = None
+    if n >= 3:
+        mean_r = sum(returns) / n
+        variance = sum((r - mean_r) ** 2 for r in returns) / n
+        std_r = math.sqrt(variance)
+        if std_r > 0:
+            sharpe = round(mean_r / std_r * math.sqrt(12), 2)
+
+    return {
+        "data": {
+            "sharpe": sharpe,
+            "maxDrawdown": round(max_dd, 2),
+            "cumulativePnl": round(cum, 2),
+            "monthCount": n,
+            "cumulativeData": cumulative_series,
+        }
+    }

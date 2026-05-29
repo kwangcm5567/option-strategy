@@ -428,7 +428,7 @@ function BuyCallTimingPanel({ option, newsRisk }) {
 }
 
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
-export default function OptionCard({ option, onClick, accountSize = 0 }) {
+export default function OptionCard({ option, onClick, onQuickAdd, accountSize = 0 }) {
   const [newsRisk, setNewsRisk] = useState(null);
 
   useEffect(() => {
@@ -636,9 +636,23 @@ export default function OptionCard({ option, onClick, accountSize = 0 }) {
       {/* ── AI 建议 ── */}
       <RecommendationBox recommendation={recommendation} />
 
-      <p style={{ fontSize: '0.7rem', color: 'rgba(148,163,184,0.4)', textAlign: 'center', margin: 0 }}>
-        点击查看历史验证、损益图和完整新闻分析 →
-      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+        <p style={{ flex: 1, fontSize: '0.7rem', color: 'rgba(148,163,184,0.4)', margin: 0 }}>
+          点击查看历史验证、损益图和完整新闻分析 →
+        </p>
+        {onQuickAdd && (
+          <button
+            onClick={e => { e.stopPropagation(); onQuickAdd(option); }}
+            style={{
+              background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.35)',
+              color: '#10b981', padding: '0.28rem 0.7rem', borderRadius: '6px',
+              cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap',
+            }}
+          >
+            + 添加到持仓
+          </button>
+        )}
+      </div>
     </div>
   );
 }

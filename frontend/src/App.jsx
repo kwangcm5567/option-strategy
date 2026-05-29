@@ -7,6 +7,7 @@ import EarningsTab from './tabs/earnings/EarningsTab';
 import MarketTab from './tabs/market/MarketTab';
 import EnhanceTab from './tabs/enhance/EnhanceTab';
 import IncomeTab from './tabs/income/IncomeTab';
+import useExpiryReminder from './hooks/useExpiryReminder';
 import './index.css';
 
 const TABS = [
@@ -22,6 +23,7 @@ const TABS = [
 export default function App() {
   const [activeTab, setActiveTab] = useState('scanner');
   const ActiveComponent = TABS.find(t => t.id === activeTab)?.component ?? ScannerTab;
+  useExpiryReminder();
 
   return (
     <div className="app-container">

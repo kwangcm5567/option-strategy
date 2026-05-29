@@ -5,6 +5,7 @@ import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
 import OptionCard from './OptionCard';
 import DetailModal from './DetailModal';
+import QuickAddModal from './QuickAddModal';
 import { TIPS } from '../../constants/tooltips';
 
 // ── 首次扫描专用 Loading（仅在没有任何数据时显示）────────────────────────────
@@ -109,6 +110,7 @@ export default function ScannerTab() {
   const [hideEarningsRisk, setHideEarningsRisk] = useState(false);
   const [showStandards, setShowStandards] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
+  const [quickAddOption, setQuickAddOption] = useState(null);
   const [lastGoodOptions, setLastGoodOptions] = useState([]);
   const [accountSize, setAccountSize] = useState(() => parseFloat(localStorage.getItem(LS_ACCOUNT_KEY) || '0'));
 
@@ -386,6 +388,7 @@ export default function ScannerTab() {
                   key={`${opt.symbol}-${opt.strategy}-${i}`}
                   option={opt}
                   onClick={() => setSelectedOption(opt)}
+                  onQuickAdd={(o) => setQuickAddOption(o)}
                   accountSize={accountSize}
                 />
               ))}
@@ -396,6 +399,10 @@ export default function ScannerTab() {
 
       {selectedOption && (
         <DetailModal option={selectedOption} onClose={() => setSelectedOption(null)} />
+      )}
+
+      {quickAddOption && (
+        <QuickAddModal option={quickAddOption} onClose={() => setQuickAddOption(null)} />
       )}
     </div>
   );

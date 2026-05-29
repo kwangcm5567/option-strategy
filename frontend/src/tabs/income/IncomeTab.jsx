@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Target, RefreshCw } from 'lucide-react';
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
-  CartesianGrid, Tooltip, ReferenceLine, Cell,
+  ResponsiveContainer, BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, Cell,
 } from 'recharts';
 import { useApi } from '../../hooks/useApi';
 import { ErrorBox } from '../../components/ui/LoadingSpinner';
@@ -237,6 +237,7 @@ export default function IncomeTab() {
   const { data: monthlyData, error: mError, refetch: mRefetch } = useApi('/api/analytics/monthly');
   const { data: perfData,   error: pError }                    = useApi('/api/analytics/performance');
   const { data: wheelData,  loading: wLoading }                = useApi('/api/analytics/wheel-cycles');
+  const { data: riskData }                                      = useApi('/api/analytics/risk-metrics');
 
   const saveGoal = (v) => {
     setGoal(v);
@@ -265,9 +266,12 @@ export default function IncomeTab() {
   const avgMonthly = recent3.length ? recent3.reduce((s, m) => s + m.totalPnl, 0) / recent3.length : 0;
   const annualRunRate = Math.round(avgMonthly * 12);
 
+  const risk = riskData?.data ?? null;
+
   const SECTIONS = [
     { id: 'income',  label: '月度收入' },
     { id: 'perf',    label: '绩效归因' },
+    { id: 'risk',    label: '风险指标' },
     { id: 'wheel',   label: `Wheel 追踪${cycles.length ? ` (${cycles.length})` : ''}` },
   ];
 
@@ -376,6 +380,53 @@ export default function IncomeTab() {
                 </div>
               ) : (
                 <PerformanceTable byStrategy={byStrategy} bySymbol={bySymbol} />
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* 风险指标区 */}
+      {activeSection === 'risk' && (
+        <div>
+          {!risk ? (
+            <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+              暂无已平仓数据，无法计算风险指标。请先在持仓追踪页平仓持仓。
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                {[
+                  { label: 'Sharpe Ratio', value: risk.sharpe != null ? risk.sharpe.toFixed(2) : '—', color: risk.sharpe != null ? (risk.sharpe >= 1 ? '#10b981' : risk.sharpe >= 0 ? '#f59e0b' : '#ef4444') : 'var(--text-secondary)', sub: '年化月度收益，≥1 为优' },
+                  { label: '最大回撤', value: `$${risk.maxDrawdown.toFixed(0)}`, color: risk.maxDrawdown > 0 ? '#ef4444' : '#10b981', sub: '累计 P&L 最大跌幅' },
+                  { label: '总累计盈亏', value: fmt$(risk.cumulativePnl, true), color: risk.cumulativePnl >= 0 ? '#10b981' : '#ef4444', sub: `共 ${risk.monthCount} 个月` },
+                ].map(({ label, value, color, sub }) => (
+                  <div key={label} className="glass-panel" style={{ padding: '0.85rem 1rem' }}>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>{label}</div>
+                    <div style={{ fontSize: '1.15rem', fontWeight: 700, color }}>{value}</div>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: '3px' }}>{sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              {risk.cumulativeData?.length >= 2 && (
+                <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                  <h3 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-secondary)' }}>累计盈亏曲线</h3>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={risk.cumulativeData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                      <CartesianGrid stroke="rgba(255,255,255,0.05)" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} />
+                      <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={v => `$${v}`} width={55} />
+                      <Tooltip
+                        formatter={(v) => [`$${Number(v).toFixed(0)}`, '累计盈亏']}
+                        contentStyle={{ background: '#1e2130', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: '0.8rem' }}
+                        labelStyle={{ color: '#94a3b8' }}
+                      />
+                      <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
+                      <Line type="monotone" dataKey="cumulative" stroke="#6366f1" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
               )}
             </>
           )}
