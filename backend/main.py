@@ -1,8 +1,12 @@
+import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
-from routers import scanner, chain, positions, market, earnings
+from routers import scanner, chain, positions, market, earnings, news, portfolio, analytics
+from services import cache as cache_svc
+
+_start_time = time.time()
 
 app = FastAPI(title="Option Strategy API v2")
 
@@ -21,11 +25,23 @@ app.include_router(chain.router)
 app.include_router(positions.router)
 app.include_router(market.router)
 app.include_router(earnings.router)
+app.include_router(news.router)
+app.include_router(portfolio.router)
+app.include_router(analytics.router)
 
 
 @app.get("/")
 def root():
     return {"status": "ok", "version": "2.0"}
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "ok",
+        "uptime_s": round(time.time() - _start_time),
+        "cache_keys": list(cache_svc._store.keys()),
+    }
 
 
 if __name__ == "__main__":

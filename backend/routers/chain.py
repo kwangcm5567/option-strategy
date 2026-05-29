@@ -79,15 +79,23 @@ def get_option_chain(
         for _, row in rows.iterrows():
             try:
                 strike  = _safe_float(row.get("strike"))
-                premium = _safe_float(row.get("lastPrice"))
                 bid     = _safe_float(row.get("bid"))
                 ask     = _safe_float(row.get("ask"))
-                iv      = _safe_float(row.get("impliedVolatility"))
+                last    = _safe_float(row.get("lastPrice"))
+                iv_raw  = _safe_float(row.get("impliedVolatility"))
                 volume  = _safe_int(row.get("volume"))
                 oi      = _safe_int(row.get("openInterest"))
 
-                if premium <= 0 or iv <= 0:
+                # 用 mid 价格兜底（近期无成交但 bid/ask 有效）
+                mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0.0
+                premium = last if last > 0 else mid
+                if premium <= 0:
                     continue
+
+                # IV：yfinance 原始值优先；不可靠时用历史波动率估算
+                iv_valid = iv_raw > 0.005  # <0.5% 视为无效
+                iv = iv_raw if iv_valid else hist_vol
+                iv_estimated = not iv_valid  # 前端用于标注"估算"
 
                 greeks   = calc_black_scholes(current_price, strike, dte, iv, bs_type)
                 exp_move = calc_expected_move(current_price, iv, dte)
@@ -104,12 +112,13 @@ def get_option_chain(
 
                 options.append({
                     "strike": strike,
-                    "premium": round(premium, 2),
+                    "premium": round(premium, 4),
                     "bid": round(bid, 2),
                     "ask": round(ask, 2),
                     "volume": volume,
                     "openInterest": oi,
                     "impliedVolatility": round(iv * 100, 1),
+                    "ivEstimated": iv_estimated,
                     "ivRank": iv_rank,
                     "distancePct": distance_pct,
                     "breakEven": break_even,

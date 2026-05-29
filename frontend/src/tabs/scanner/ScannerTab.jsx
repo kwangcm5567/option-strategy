@@ -5,21 +5,22 @@ import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
 import OptionCard from './OptionCard';
 import DetailModal from './DetailModal';
+import QuickAddModal from './QuickAddModal';
 import { TIPS } from '../../constants/tooltips';
 
 // ── 首次扫描专用 Loading（仅在没有任何数据时显示）────────────────────────────
 const SCAN_STEPS = [
-  '正在连接期权数据源…',
-  '正在获取 AAPL / MSFT / NVDA 期权链…',
-  '正在获取 AMZN / TSLA / GOOGL 期权链…',
-  '正在获取 META / JPM / V 期权链…',
-  '正在获取 JNJ / UNH / XOM 期权链…',
-  '正在获取 CVX / PG / KO 期权链…',
-  '正在获取 HD / COST / ABBV 期权链…',
-  '正在获取 CRM / NFLX 期权链…',
+  '正在连接 Yahoo Finance 数据源…',
+  '正在获取 SPY / QQQ / IWM ETF 期权链…',
+  '正在获取 AAPL / MSFT / NVDA / AMZN 期权链…',
+  '正在获取 TSLA / META / GOOGL / COIN 期权链…',
+  '正在获取 MSTR / SMCI / AMD / NVDA 期权链…',
+  '正在获取 JPM / GS / BAC / V 期权链…',
+  '正在获取 ABBV / UNH / LLY / TMO 期权链…',
+  '正在获取 HD / COST / NKE / DIS 期权链…',
   '正在运行历史回测（2 年滚动窗口）…',
   '正在用 Black-Scholes 计算 Greeks…',
-  '正在计算 IV Rank / 预期波动区间…',
+  '正在计算 IV 百分位 / 预期波动区间…',
   '正在过滤和排序结果，快好了…',
 ];
 
@@ -99,19 +100,28 @@ function buildEndpoint(strategies, dteMin, dteMax, ivRank) {
   return `/api/scan?strategies=${encodeURIComponent(s)}&dte_min=${dteMin}&dte_max=${dteMax}&min_iv_rank=${ivRank}`;
 }
 
+const LS_ACCOUNT_KEY = 'alpha_account_size';
+
 export default function ScannerTab() {
   const [selectedStrategies, setSelectedStrategies] = useState(['sell_put']);
   const [dteMin, setDteMin] = useState(7);
   const [dteMax, setDteMax] = useState(60);
   const [minIvRank, setMinIvRank] = useState(0);
+  const [hideEarningsRisk, setHideEarningsRisk] = useState(false);
+  const [showStandards, setShowStandards] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
-  // 保留上一次成功的数据，刷新时不清空卡片
+  const [quickAddOption, setQuickAddOption] = useState(null);
   const [lastGoodOptions, setLastGoodOptions] = useState([]);
+  const [accountSize, setAccountSize] = useState(() => parseFloat(localStorage.getItem(LS_ACCOUNT_KEY) || '0'));
+
+  const saveAccountSize = (v) => {
+    setAccountSize(v);
+    localStorage.setItem(LS_ACCOUNT_KEY, String(v));
+  };
 
   const endpoint = buildEndpoint(selectedStrategies, dteMin, dteMax, minIvRank);
   const { data, loading, error, refetch } = useApi(endpoint, { timeout: 180_000 });
 
-  // 每次拿到新数据就存起来
   useEffect(() => {
     if (data?.data?.length > 0) {
       setLastGoodOptions(data.data);
@@ -122,27 +132,36 @@ export default function ScannerTab() {
     setSelectedStrategies(prev =>
       prev.includes(val) ? prev.filter(s => s !== val) : [...prev, val]
     );
+    setLastGoodOptions([]);
   };
 
-  // 刷新：传入 force_refresh=true 的 URL，只触发一次请求
   const handleRefresh = () => {
     refetch(endpoint + '&force_refresh=true');
   };
 
+  const handleDteMin = (v) => { setDteMin(v); setLastGoodOptions([]); };
+  const handleDteMax = (v) => { setDteMax(v); setLastGoodOptions([]); };
+
   const isInitialLoad = loading && lastGoodOptions.length === 0;
   const isRefreshing  = loading && lastGoodOptions.length > 0;
-  const displayOptions = data?.data || lastGoodOptions;
+  const rawOptions = data?.data || lastGoodOptions;
+  const displayOptions = hideEarningsRisk
+    ? rawOptions.filter(o => !o.earningsRisk)
+    : rawOptions;
+  const hiddenEarningsCount = hideEarningsRisk
+    ? rawOptions.filter(o => o.earningsRisk).length
+    : 0;
 
   return (
     <div style={{ animation: 'fadeInUp 0.4s ease-out' }}>
 
       {/* ── 筛选控制栏 ── */}
-      <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', flexWrap: 'wrap', gap: '1.25rem', alignItems: 'center' }}>
+      <div className="glass-panel scanner-filter-bar" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', flexWrap: 'wrap', gap: '1.25rem', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
           <Filter size={15} /> 筛选
         </div>
 
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <div className="scanner-strategy-buttons" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           {STRATEGY_OPTIONS.map(({ value, label, tip }) => (
             <Tooltip key={value} text={tip} width={280}>
               <button
@@ -165,12 +184,12 @@ export default function ScannerTab() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
           <span>到期天数</span>
           <input type="number" min={1} max={dteMax - 1} value={dteMin}
-            onChange={e => setDteMin(+e.target.value)}
+            onChange={e => handleDteMin(+e.target.value)}
             style={{ width: '48px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'var(--text-primary)', padding: '0.2rem 0.4rem', textAlign: 'center', fontSize: '0.82rem' }}
           />
           <span>–</span>
           <input type="number" min={dteMin + 1} max={365} value={dteMax}
-            onChange={e => setDteMax(+e.target.value)}
+            onChange={e => handleDteMax(+e.target.value)}
             style={{ width: '48px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'var(--text-primary)', padding: '0.2rem 0.4rem', textAlign: 'center', fontSize: '0.82rem' }}
           />
           <span>天</span>
@@ -183,6 +202,43 @@ export default function ScannerTab() {
             style={{ width: '52px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'var(--text-primary)', padding: '0.2rem 0.4rem', textAlign: 'center', fontSize: '0.82rem' }}
           />
           <span>%</span>
+        </div>
+
+        {/* ── 财报高危开关 ── */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          <button
+            onClick={() => setHideEarningsRisk(v => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              padding: '0.35rem 0.75rem', borderRadius: '8px', cursor: 'pointer',
+              fontSize: '0.78rem', transition: 'all 0.2s',
+              border: hideEarningsRisk
+                ? '1px solid rgba(239,68,68,0.5)'
+                : '1px solid rgba(255,255,255,0.15)',
+              background: hideEarningsRisk
+                ? 'rgba(239,68,68,0.12)'
+                : 'rgba(16,185,129,0.08)',
+              color: hideEarningsRisk ? '#fca5a5' : '#6ee7b7',
+            }}
+          >
+            {hideEarningsRisk ? '⛔ 隐藏财报高危期权（已开启）' : '✅ 显示所有期权（含财报高危）'}
+          </button>
+          <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', paddingLeft: '4px' }}>
+            点击切换：财报前期权风险较高
+          </span>
+        </div>
+
+        {/* 账户规模（仓位建议基准） */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+          <Tooltip text="设置账户规模后，每张期权卡片将显示建议合约数（单笔风险 ≤ 账户 2%）。">
+            <span>账户规模</span>
+          </Tooltip>
+          <span>$</span>
+          <input type="number" min={0} step={1000} value={accountSize || ''}
+            placeholder="50000"
+            onChange={e => saveAccountSize(+e.target.value)}
+            style={{ width: '80px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'var(--text-primary)', padding: '0.2rem 0.4rem', textAlign: 'right', fontSize: '0.82rem' }}
+          />
         </div>
 
         <button
@@ -198,6 +254,55 @@ export default function ScannerTab() {
           <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
           {loading ? '扫描中…' : '刷新数据'}
         </button>
+      </div>
+
+      {/* ── 机构筛选标准说明（可折叠）── */}
+      <div className="glass-panel" style={{ padding: '0.7rem 1.25rem', marginBottom: '1rem' }}>
+        <button
+          onClick={() => setShowStandards(v => !v)}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer', width: '100%', padding: 0, textAlign: 'left' }}
+        >
+          <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>📐 机构筛选标准</span>
+          <span style={{ fontSize: '0.7rem', color: '#60a5fa', background: 'rgba(59,130,246,0.12)', padding: '0.1rem 0.5rem', borderRadius: '999px', border: '1px solid rgba(96,165,250,0.25)' }}>已激活</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{showStandards ? '▲ 收起' : '▼ 展开'}</span>
+        </button>
+        {showStandards && (() => {
+          const hasSell = selectedStrategies.some(s => s.startsWith('sell_'));
+          const hasBuy  = selectedStrategies.includes('buy_call') || selectedStrategies.includes('buy_put');
+          const sellStds = [
+            { label: 'σ-距离 ≥ 1.0σ', desc: '行权价须超出预期波动幅度，甜点在 1.2σ（约 Delta 0.20）', color: '#10b981' },
+            { label: '|Δ| 0.10 – 0.40', desc: 'Delta 甜点区间，兼顾安全边际与权利金回报', color: '#60a5fa' },
+            { label: '历史胜率 ≥ 70%', desc: '1年回测安全窗口 ≥ 70%，机构级确定性门槛', color: '#f59e0b' },
+            { label: 'ROC ≤ 40%', desc: '年化资本回报率上限，过高意味着隐含风险过大', color: '#a78bfa' },
+            { label: '年化回报 8–80%', desc: '筛除无意义低回报与极端高风险期权', color: '#fb7185' },
+          ];
+          const buyStds = [
+            { label: 'IV Rank ≤ 25%', desc: '期权便宜时买入，不为 IV 溢价买单（买方核心时机）', color: '#8b5cf6' },
+            { label: 'RSI 45–65', desc: '动量健康区间，避免超买（>70）追涨；<35 等反转确认', color: '#60a5fa' },
+            { label: 'MACD 正向扩张', desc: '趋势向上确认，避免在动能衰竭时买入', color: '#10b981' },
+            { label: '高于 SMA50 + SMA200', desc: '双均线确认多头格局，降低逆势建仓风险', color: '#f59e0b' },
+            { label: 'Delta 0.35–0.55', desc: '足够方向性敞口，不过度依赖极端波动才获利', color: '#fb7185' },
+          ];
+          const StdGrid = ({ items, title, titleColor }) => (
+            <div>
+              {title && <div style={{ fontSize: '0.72rem', fontWeight: 700, color: titleColor, marginBottom: '0.4rem', marginTop: '0.5rem' }}>{title}</div>}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(185px, 1fr))', gap: '0.6rem' }}>
+                {items.map(item => (
+                  <div key={item.label} style={{ padding: '0.5rem 0.65rem', background: 'rgba(255,255,255,0.03)', borderRadius: '7px', borderLeft: `3px solid ${item.color}55` }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: item.color, marginBottom: '0.2rem' }}>{item.label}</div>
+                    <div style={{ fontSize: '0.71rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>{item.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+          return (
+            <div style={{ marginTop: '0.75rem' }}>
+              {hasSell && <StdGrid items={sellStds} title={hasBuy ? '📐 卖出策略标准（Sell Put / Sell Call）' : null} titleColor="#10b981" />}
+              {hasBuy  && <StdGrid items={buyStds}  title={hasSell ? '📈 买入策略标准（Buy Call）' : null}            titleColor="#8b5cf6" />}
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── 内容区 ── */}
@@ -223,16 +328,59 @@ export default function ScannerTab() {
         displayOptions.length === 0 && !loading && !error ? (
           <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
             <h3>暂无符合条件的期权</h3>
-            <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem', fontSize: '0.9rem' }}>
-              当前市场条件不满足筛选标准，尝试放宽条件或点击刷新。
-            </p>
+            {hideEarningsRisk && hiddenEarningsCount > 0 ? (
+              <div style={{ marginTop: '0.75rem' }}>
+                <p style={{ color: '#fca5a5', fontSize: '0.9rem' }}>
+                  ⛔ 所有 {hiddenEarningsCount} 个期权因财报风险被隐藏（当前处于财报季）
+                </p>
+                <button
+                  onClick={() => setHideEarningsRisk(false)}
+                  style={{ marginTop: '0.75rem', padding: '0.45rem 1.2rem', borderRadius: '8px', border: '1px solid rgba(96,165,250,0.4)', background: 'rgba(59,130,246,0.15)', color: '#60a5fa', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}
+                >
+                  显示全部（含财报高危）
+                </button>
+              </div>
+            ) : (
+              <div style={{ marginTop: '0.75rem' }}>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '0.75rem' }}>
+                  当前过滤条件下无结果，以下原因可能导致此问题：
+                </p>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                  {dteMax - dteMin < 14 && (
+                    <li style={{ color: '#fbbf24', fontSize: '0.85rem' }}>
+                      ⚠ DTE 范围过窄（{dteMin}–{dteMax} 天），建议至少保留 14 天跨度
+                    </li>
+                  )}
+                  {minIvRank > 30 && (
+                    <li style={{ color: '#fbbf24', fontSize: '0.85rem' }}>
+                      ⚠ 最低 IV Rank 设为 {minIvRank}%，过滤掉了大量低波动期权，可尝试降至 0
+                    </li>
+                  )}
+                  {selectedStrategies.some(s => s.startsWith('buy_')) && (
+                    <li style={{ color: '#a78bfa', fontSize: '0.85rem' }}>
+                      ℹ 买入策略（buy_call / buy_put）要求 HV &gt; IV 且波动率边际，满足条件的标的较少
+                    </li>
+                  )}
+                  <li style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                    ℹ 期权扫描需符合σ距离、年化收益率、Delta 等机构级筛选标准；市场平静期结果会减少
+                  </li>
+                </ul>
+              </div>
+            )}
           </div>
         ) : (
           <>
             {displayOptions.length > 0 && (
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-                找到 {displayOptions.length} 个符合条件的期权，按综合评分排列
-              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
+                  找到 {displayOptions.length} 个符合条件的期权，按综合评分排列
+                </p>
+                {hiddenEarningsCount > 0 && (
+                  <span style={{ fontSize: '0.75rem', color: '#fca5a5', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', padding: '0.15rem 0.5rem', borderRadius: '999px' }}>
+                    ⛔ 已隐藏 {hiddenEarningsCount} 条财报高危期权
+                  </span>
+                )}
+              </div>
             )}
             <div className="dashboard-grid">
               {displayOptions.map((opt, i) => (
@@ -240,6 +388,8 @@ export default function ScannerTab() {
                   key={`${opt.symbol}-${opt.strategy}-${i}`}
                   option={opt}
                   onClick={() => setSelectedOption(opt)}
+                  onQuickAdd={(o) => setQuickAddOption(o)}
+                  accountSize={accountSize}
                 />
               ))}
             </div>
@@ -249,6 +399,10 @@ export default function ScannerTab() {
 
       {selectedOption && (
         <DetailModal option={selectedOption} onClose={() => setSelectedOption(null)} />
+      )}
+
+      {quickAddOption && (
+        <QuickAddModal option={quickAddOption} onClose={() => setQuickAddOption(null)} />
       )}
     </div>
   );

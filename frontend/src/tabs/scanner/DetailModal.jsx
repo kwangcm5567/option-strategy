@@ -31,11 +31,16 @@ export default function DetailModal({ option, onClose }) {
   const [error, setError] = useState(null);
   const [rollPlan, setRollPlan] = useState(null);
   const [loadingRoll, setLoadingRoll] = useState(false);
+  const [newsData, setNewsData] = useState(null);
+  const [loadingNews, setLoadingNews] = useState(true);
 
   useEffect(() => {
     if (!option) return;
     setLoading(true);
     setError(null);
+    setNewsData(null);
+    setLoadingNews(true);
+
     fetch(
       `${API_BASE}/api/analyze/${option.symbol}?strike=${option.strike}&dte=${option.dte}&current_price=${option.currentPrice}&strategy=${option.strategy}`
     )
@@ -43,7 +48,13 @@ export default function DetailModal({ option, onClose }) {
       .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-      
+
+    fetch(`${API_BASE}/api/news/${option.symbol}?strategy=${option.strategy}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setNewsData(d); })
+      .catch(() => {})
+      .finally(() => setLoadingNews(false));
+
     if (option.strategy === 'sell_put') {
       setLoadingRoll(true);
       fetch(`${API_BASE}/api/simulate-roll/${option.symbol}?strike=${option.strike}&dte=${option.dte}&premium=${option.premium}`)
@@ -206,9 +217,91 @@ export default function DetailModal({ option, onClose }) {
               </Section>
             )}
 
-            {/* ── 新闻情绪 ── */}
-            {data?.newsAnalysis && (
-              <Section title="📰 近期新闻情绪分析">
+            {/* ── 华尔街见闻新闻风险分析 ── */}
+            <Section title="📰 华尔街见闻 · 新闻风险分析">
+              {loadingNews ? (
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>正在抓取最新新闻…</div>
+              ) : !newsData || newsData.articleCount === 0 ? (
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>暂未找到相关中文新闻</p>
+              ) : (
+                <>
+                  {/* 风险汇总行 */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem', padding: '0.75rem 1rem', background: 'rgba(255,255,255,0.04)', borderRadius: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>新闻风险等级</span>
+                      <span style={{
+                        fontWeight: 800, fontSize: '1rem', padding: '0.15rem 0.6rem', borderRadius: '6px',
+                        color: newsData.riskLevel === '高' ? '#ef4444' : newsData.riskLevel === '中' ? '#f59e0b' : '#10b981',
+                        background: newsData.riskLevel === '高' ? 'rgba(239,68,68,0.12)' : newsData.riskLevel === '中' ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.12)',
+                      }}>
+                        {newsData.riskLevel === '高' ? '⚠️ 高风险' : newsData.riskLevel === '中' ? '⚡ 中等' : '✅ 低风险'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>情绪</span>
+                      <span style={{
+                        fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.3rem',
+                        color: newsData.overallSentiment === '看涨' ? '#10b981' : newsData.overallSentiment === '看跌' ? '#ef4444' : '#f59e0b',
+                      }}>
+                        {newsData.overallSentiment === '看涨' && <TrendingUp size={15} />}
+                        {newsData.overallSentiment === '看跌' && <TrendingDown size={15} />}
+                        {newsData.overallSentiment === '中性' && <Minus size={15} />}
+                        {newsData.overallSentiment}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginLeft: 'auto' }}>
+                      {newsData.articleCount} 篇 · {newsData.source === 'wallstreetcn' ? '华尔街见闻' : 'FMP'}
+                    </span>
+                  </div>
+
+                  {/* 负面关键词标签 */}
+                  {newsData.topRiskKeywords?.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '1rem' }}>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>风险信号：</span>
+                      {newsData.topRiskKeywords.map(kw => (
+                        <span key={kw} style={{ padding: '0.15rem 0.5rem', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '999px', fontSize: '0.72rem', color: '#fca5a5' }}>
+                          {kw}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 与策略的影响说明 */}
+                  {newsData.riskLevel === '高' && (
+                    <div style={{ padding: '0.6rem 0.85rem', background: 'rgba(239,68,68,0.08)', borderLeft: '3px solid #ef4444', borderRadius: '0 8px 8px 0', marginBottom: '1rem', fontSize: '0.82rem', color: '#fca5a5', lineHeight: '1.6' }}>
+                      ⚠️ 近期负面新闻密集，
+                      {option.strategy.startsWith('sell_') ? '卖出期权面临较大下行风险，建议降低仓位或暂缓建仓。' : '建议结合技术面再判断方向。'}
+                    </div>
+                  )}
+
+                  {/* 文章列表 */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {newsData.articles.map((art, i) => (
+                      <div key={i} style={{ padding: '0.75rem', border: '1px solid var(--card-border)', borderRadius: '8px' }}>
+                        {art.link ? (
+                          <a href={art.link} target="_blank" rel="noreferrer"
+                            style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: '0.85rem', textDecoration: 'none', display: 'block', marginBottom: '0.3rem' }}>
+                            {art.title}
+                          </a>
+                        ) : (
+                          <p style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.3rem' }}>{art.title}</p>
+                        )}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                          <span>{art.publishedAt ? new Date(art.publishedAt * 1000 || art.publishedAt).toLocaleDateString('zh-CN') : ''}</span>
+                          <span style={{ color: art.sentimentScore > 0.15 ? '#10b981' : art.sentimentScore < -0.15 ? '#ef4444' : '#f59e0b' }}>
+                            情绪 {art.sentimentScore > 0 ? '+' : ''}{art.sentimentScore.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </Section>
+
+            {/* ── 英文新闻情绪（FMP / yfinance 来源）── */}
+            {data?.newsAnalysis && data.newsAnalysis.articles.length > 0 && (
+              <Section title="🌐 英文媒体情绪（FMP）">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', padding: '0.75rem 1rem', background: 'rgba(255,255,255,0.04)', borderRadius: '8px' }}>
                   <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>整体情绪：</span>
                   <span style={{
@@ -220,13 +313,9 @@ export default function DetailModal({ option, onClose }) {
                     {data.newsAnalysis.overallSentiment === '中性' && <Minus size={18} />}
                     {data.newsAnalysis.overallSentiment}
                   </span>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>（基于标题 VADER 情绪分析）</span>
                 </div>
-
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {data.newsAnalysis.articles.length === 0 ? (
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>暂无近期新闻</p>
-                  ) : data.newsAnalysis.articles.map((art, i) => (
+                  {data.newsAnalysis.articles.map((art, i) => (
                     <div key={i} style={{ padding: '0.75rem', border: '1px solid var(--card-border)', borderRadius: '8px' }}>
                       <a href={art.link} target="_blank" rel="noreferrer" style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: '0.85rem', textDecoration: 'none', display: 'block', marginBottom: '0.4rem' }}>
                         {art.title}

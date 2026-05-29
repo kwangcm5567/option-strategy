@@ -49,7 +49,7 @@ function IVHeatMap({ ivRanks }) {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
         <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>
-          <Tooltip text={TIPS.ivRank} width={300}><span>20 只股票 IV Rank 热力图</span></Tooltip>
+          <Tooltip text={TIPS.ivRank} width={320}><span>IV 百分位热力图（{ivRanks.length} 只）</span></Tooltip>
         </h3>
         <div style={{ display: 'flex', gap: '1rem', fontSize: '0.73rem', color: 'var(--text-secondary)' }}>
           <span>🟢 &lt;30% 便宜（适合买）</span>

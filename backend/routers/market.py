@@ -77,7 +77,7 @@ def market_overview(force_refresh: bool = False):
                 except Exception:
                     continue
 
-            if current_iv is None or current_iv <= 0:
+            if current_iv is None or current_iv < 0.01:
                 # fallback：用历史波动率
                 daily_ret = history["Close"].pct_change().dropna()
                 current_iv = float(daily_ret.std() * math.sqrt(252))
