@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, Filter } from 'lucide-react';
+import { RefreshCw, Filter, FileDown } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
 import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
@@ -7,6 +7,7 @@ import OptionCard from './OptionCard';
 import DetailModal from './DetailModal';
 import QuickAddModal from './QuickAddModal';
 import { TIPS } from '../../constants/tooltips';
+import { generateReport } from './generateReport';
 
 // ── 首次扫描专用 Loading（仅在没有任何数据时显示）────────────────────────────
 const SCAN_STEPS = [
@@ -101,6 +102,18 @@ function buildEndpoint(strategies, dteMin, dteMax, ivRank) {
 }
 
 const LS_ACCOUNT_KEY = 'alpha_account_size';
+const LS_DAILY_SCAN  = 'alpha_daily_scan';
+
+function loadTodayScan() {
+  try {
+    const raw = localStorage.getItem(LS_DAILY_SCAN);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const today = new Date().toISOString().slice(0, 10);
+    if (parsed.date === today && parsed.options?.length) return parsed;
+  } catch { /* ignore */ }
+  return null;
+}
 
 export default function ScannerTab() {
   const [selectedStrategies, setSelectedStrategies] = useState(['sell_put']);
@@ -111,7 +124,8 @@ export default function ScannerTab() {
   const [showStandards, setShowStandards] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
   const [quickAddOption, setQuickAddOption] = useState(null);
-  const [lastGoodOptions, setLastGoodOptions] = useState([]);
+  const [cachedScanMeta, setCachedScanMeta] = useState(loadTodayScan);
+  const [lastGoodOptions, setLastGoodOptions] = useState(() => loadTodayScan()?.options ?? []);
   const [accountSize, setAccountSize] = useState(() => parseFloat(localStorage.getItem(LS_ACCOUNT_KEY) || '0'));
 
   const saveAccountSize = (v) => {
@@ -125,8 +139,17 @@ export default function ScannerTab() {
   useEffect(() => {
     if (data?.data?.length > 0) {
       setLastGoodOptions(data.data);
+      const now = new Date();
+      const meta = {
+        date: now.toISOString().slice(0, 10),
+        time: now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        options: data.data,
+        filters: { strategies: selectedStrategies, dteMin, dteMax, minIvRank },
+      };
+      try { localStorage.setItem(LS_DAILY_SCAN, JSON.stringify(meta)); } catch { /* ignore */ }
+      setCachedScanMeta(meta);
     }
-  }, [data]);
+  }, [data, selectedStrategies, dteMin, dteMax, minIvRank]);
 
   const toggleStrategy = (val) => {
     setSelectedStrategies(prev =>
@@ -137,6 +160,22 @@ export default function ScannerTab() {
 
   const handleRefresh = () => {
     refetch(endpoint + '&force_refresh=true');
+  };
+
+  const handleExportReport = () => {
+    if (displayOptions.length === 0) return;
+    const meta = loadTodayScan();
+    const html = generateReport(displayOptions, {
+      scanTime: meta?.time,
+      filters: meta?.filters,
+    });
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `alpha-options-${new Date().toISOString().slice(0, 10)}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleDteMin = (v) => { setDteMin(v); setLastGoodOptions([]); };
@@ -241,19 +280,38 @@ export default function ScannerTab() {
           />
         </div>
 
-        <button
-          onClick={handleRefresh}
-          disabled={loading}
-          style={{
-            marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.4rem',
-            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-            color: 'var(--text-primary)', padding: '0.4rem 1rem', borderRadius: '8px',
-            cursor: loading ? 'not-allowed' : 'pointer', fontSize: '0.82rem', transition: 'all 0.2s',
-          }}
-        >
-          <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-          {loading ? '扫描中…' : '刷新数据'}
-        </button>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <button
+            onClick={handleExportReport}
+            disabled={displayOptions.length === 0}
+            title={displayOptions.length === 0 ? '无数据可导出，请先完成扫描' : '下载今日交易计划 HTML 报告'}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              background: displayOptions.length === 0 ? 'rgba(255,255,255,0.03)' : 'rgba(16,185,129,0.1)',
+              border: `1px solid ${displayOptions.length === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(16,185,129,0.3)'}`,
+              color: displayOptions.length === 0 ? 'rgba(148,163,184,0.4)' : '#6ee7b7',
+              padding: '0.4rem 1rem', borderRadius: '8px',
+              cursor: displayOptions.length === 0 ? 'not-allowed' : 'pointer',
+              fontSize: '0.82rem', transition: 'all 0.2s',
+            }}
+          >
+            <FileDown size={14} />
+            导出报告
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={loading}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+              color: 'var(--text-primary)', padding: '0.4rem 1rem', borderRadius: '8px',
+              cursor: loading ? 'not-allowed' : 'pointer', fontSize: '0.82rem', transition: 'all 0.2s',
+            }}
+          >
+            <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
+            {loading ? '扫描中…' : '刷新数据'}
+          </button>
+        </div>
       </div>
 
       {/* ── 机构筛选标准说明（可折叠）── */}
@@ -311,7 +369,16 @@ export default function ScannerTab() {
       {isInitialLoad && <ScannerLoading />}
 
       {/* 刷新中：小横幅，卡片保持可见 */}
-      {isRefreshing && <RefreshingBanner />}
+      {isRefreshing && (
+        <>
+          <RefreshingBanner />
+          {cachedScanMeta && (
+            <p style={{ fontSize: '0.78rem', color: '#fbbf24', marginBottom: '1rem', marginTop: '-0.5rem' }}>
+              ⚡ 当前显示今日 {cachedScanMeta.time} 的缓存数据，扫描完成后自动更新
+            </p>
+          )}
+        </>
+      )}
 
       {/* 错误提示（非首次也显示） */}
       {!loading && error && <ErrorBox message={error} />}
@@ -319,7 +386,13 @@ export default function ScannerTab() {
       {/* 缓存提示 */}
       {!loading && !error && data?.cached && (
         <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-          📦 数据来自缓存（1 小时内有效）· 点击「刷新数据」重新扫描
+          📦 数据来自服务器缓存（1 小时内有效）· 点击「刷新数据」重新扫描
+        </p>
+      )}
+      {/* 今日本地缓存提示（首次加载完成后） */}
+      {!loading && !error && cachedScanMeta && !data?.cached && (
+        <p style={{ fontSize: '0.78rem', color: '#a78bfa', marginBottom: '1rem' }}>
+          💾 今日 {cachedScanMeta.time} 的扫描结果已保存本地，明日前重开页面无需等待
         </p>
       )}
 
