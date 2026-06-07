@@ -383,10 +383,25 @@ def _process_row(
     rsi: float = 50.0,
     macd_info: dict | None = None,
     sma200: float | None = None,
+    relaxed: bool = False,
 ) -> dict | None:
     dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
     if dte <= 0:
         return None
+
+    # 放宽模式：市场平静 / 熊市时放松机构级门槛，让用户至少看到候选。
+    if relaxed:
+        dist_min, dist_max, buy_dist_max = 1.0, 30.0, 25.0
+        ann_min_sp, ann_min_sc, ann_max = 3, 1.5, 120
+        std_min, roc_max = 0.7, 60
+        delta_min, delta_max, delta_buy_min = 0.05, 0.50, 0.20
+        pop_min = 55
+    else:
+        dist_min, dist_max, buy_dist_max = 2.0, 20.0, 15.0
+        ann_min_sp, ann_min_sc, ann_max = 8, 3, 80
+        std_min, roc_max = 1.0, 40
+        delta_min, delta_max, delta_buy_min = 0.10, 0.40, 0.30
+        pop_min = 70
 
     strike = float(row["strike"])
     last_price = float(row["lastPrice"]) if not pd.isna(row["lastPrice"]) else 0.0
@@ -450,14 +465,14 @@ def _process_row(
 
     # 距离过滤（避免深 OTM 垃圾期权）
     if strategy in ("sell_put", "sell_call"):
-        if not (2.0 <= distance_pct <= 20.0):
+        if not (dist_min <= distance_pct <= dist_max):
             return None
-        if strategy == "sell_put" and (annualized_return < 8 or annualized_return > 80):
+        if strategy == "sell_put" and (annualized_return < ann_min_sp or annualized_return > ann_max):
             return None
-        if strategy == "sell_call" and (annualized_return < 3 or annualized_return > 80):
+        if strategy == "sell_call" and (annualized_return < ann_min_sc or annualized_return > ann_max):
             return None
     else:
-        if distance_pct > 15.0:  # 买方不要太深 OTM
+        if distance_pct > buy_dist_max:  # 买方不要太深 OTM
             return None
 
     if strategy == "buy_call" and current_price < sma50:
@@ -466,7 +481,7 @@ def _process_row(
     # ── 机构标准：σ-标准化距离（1.2σ 为甜点，≥ 1.0σ 为最低准入）──
     exp_move_pct_raw = iv * math.sqrt(dte / 365) * 100
     std_distance = round(distance_pct / exp_move_pct_raw, 2) if exp_move_pct_raw > 0 else None
-    if strategy in ("sell_put", "sell_call") and std_distance is not None and std_distance < 1.0:
+    if strategy in ("sell_put", "sell_call") and std_distance is not None and std_distance < std_min:
         return None
 
     # ── 机构标准：ROC（权利金/最大亏损 年化）──
@@ -476,7 +491,7 @@ def _process_row(
         roc = round(premium / strike * (365 / dte) * 100, 1)
     else:
         roc = None
-    if strategy in ("sell_put", "sell_call") and roc is not None and roc > 40:
+    if strategy in ("sell_put", "sell_call") and roc is not None and roc > roc_max:
         return None
 
     # IV 溢价（IV 相对历史波动率的超额；正值对卖方有利）
@@ -492,21 +507,21 @@ def _process_row(
         d_abs = abs(greeks["delta"])
         if strategy in ("sell_put", "sell_call"):
             # 卖方甜点：Delta 0.10-0.40（太低=深OTM低回报，太高=高风险）
-            if not (0.10 <= d_abs <= 0.40):
+            if not (delta_min <= d_abs <= delta_max):
                 return None
         elif strategy == "buy_call":
             # 买方需要足够方向性敞口
-            if d_abs < 0.30:
+            if d_abs < delta_buy_min:
                 return None
         elif strategy == "buy_put":
-            if d_abs < 0.30:
+            if d_abs < delta_buy_min:
                 return None
 
     # ── 四种策略的经验胜率 ──
     if strategy == "sell_put":
         win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
         pop_empirical = round(win_rate * 100, 1)
-        if pop_empirical < 70:
+        if pop_empirical < pop_min:
             return None
     elif strategy == "buy_put":
         pop_empirical = _empirical_win_put_buy(down_windows, distance_pct)
@@ -595,6 +610,7 @@ def _process_row(
         "macdAccel":     macd_info.get("accelerating") if macd_info else None,
         "macdHistogram": macd_info.get("histogram")    if macd_info else None,
         "aboveSma200":   (current_price >= sma200)     if sma200 is not None else None,
+        "relaxed": relaxed,
     }
     result["score"] = round(_score(result), 4)
     return result
@@ -612,6 +628,7 @@ def _process_ticker(
     dividend_map: dict,
     needs_down: bool,
     needs_up: bool,
+    relaxed: bool = False,
 ) -> list[dict]:
     try:
         ticker = yf.Ticker(symbol)
@@ -687,6 +704,7 @@ def _process_ticker(
                         rsi=rsi,
                         macd_info=macd_info,
                         sma200=sma200,
+                        relaxed=relaxed,
                     )
                     if item:
                         results.append(item)
@@ -705,6 +723,7 @@ def scan_options(
     dte_min: int = 7,
     dte_max: int = 60,
     min_iv_rank: float = 0,
+    relaxed: bool = False,
 ) -> list[dict]:
     if strategies is None:
         strategies = ["sell_put"]
@@ -722,7 +741,7 @@ def scan_options(
             pool.submit(
                 _process_ticker,
                 sym, strategies, today, dte_min, dte_max,
-                earnings_map, dividend_map, needs_down, needs_up,
+                earnings_map, dividend_map, needs_down, needs_up, relaxed,
             ): sym
             for sym in TICKERS
         }

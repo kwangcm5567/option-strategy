@@ -76,25 +76,43 @@ def scan(
     dte_min: int = Query(default=7, ge=1),
     dte_max: int = Query(default=60, le=365),
     min_iv_rank: float = Query(default=0, ge=0, le=100),
+    relaxed: bool = Query(default=False, description="放宽筛选门槛（市场平静期使用）"),
     force_refresh: bool = Query(default=False),
 ):
     strategy_list = [s.strip() for s in strategies.split(",") if s.strip()]
-    cache_key = f"scan:{'|'.join(sorted(strategy_list))}:{dte_min}:{dte_max}:{min_iv_rank}"
+
+    def _key(rx: bool) -> str:
+        mode = "rx" if rx else "std"
+        return f"scan:{'|'.join(sorted(strategy_list))}:{dte_min}:{dte_max}:{min_iv_rank}:{mode}"
 
     if not force_refresh:
-        cached = cache_svc.get(cache_key, ttl_seconds=3600)
+        cached = cache_svc.get(_key(relaxed), ttl_seconds=3600)
         if cached is not None:
-            return {"data": cached, "cached": True}
+            return {"data": cached, "cached": True, "relaxed": relaxed}
 
     results = scan_options(
         strategies=strategy_list,
         dte_min=dte_min,
         dte_max=dte_max,
         min_iv_rank=min_iv_rank,
+        relaxed=relaxed,
     )
+    cache_svc.set(_key(relaxed), results)
 
-    cache_svc.set(cache_key, results)
-    return {"data": results, "cached": False}
+    # 严格模式下空结果 → 自动放宽再扫一轮
+    auto_relaxed = False
+    if not results and not relaxed:
+        results = scan_options(
+            strategies=strategy_list,
+            dte_min=dte_min,
+            dte_max=dte_max,
+            min_iv_rank=min_iv_rank,
+            relaxed=True,
+        )
+        cache_svc.set(_key(True), results)
+        auto_relaxed = True
+
+    return {"data": results, "cached": False, "relaxed": relaxed or auto_relaxed}
 
 
 @router.get("/api/analyze/{symbol}")

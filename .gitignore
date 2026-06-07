@@ -8,6 +8,7 @@ venv/
 dist/
 .env
 .env.*
+!.env.example
 
 # SQLite databases
 *.db

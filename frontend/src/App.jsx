@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Search, BarChart2, Briefcase, Calendar, TrendingUp, Layers, DollarSign } from 'lucide-react';
 import ScannerTab from './tabs/scanner/ScannerTab';
 import StrategyTab from './tabs/strategy/StrategyTab';
@@ -8,6 +8,7 @@ import MarketTab from './tabs/market/MarketTab';
 import EnhanceTab from './tabs/enhance/EnhanceTab';
 import IncomeTab from './tabs/income/IncomeTab';
 import useExpiryReminder from './hooks/useExpiryReminder';
+import { API_BASE } from './hooks/useApi';
 import './index.css';
 
 const TABS = [
@@ -24,6 +25,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('scanner');
   const ActiveComponent = TABS.find(t => t.id === activeTab)?.component ?? ScannerTab;
   useExpiryReminder();
+
+  // 提前唤醒 Render 后端（免费层会休眠），减少首次扫描的冷启动等待
+  useEffect(() => {
+    fetch(`${API_BASE}/api/health`).catch(() => {});
+  }, []);
 
   return (
     <div className="app-container">

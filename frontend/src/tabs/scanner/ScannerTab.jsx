@@ -95,9 +95,9 @@ const STRATEGY_OPTIONS = [
   { value: 'buy_put',   label: '买入 Put',  tip: TIPS.strategies.buy_put   },
 ];
 
-function buildEndpoint(strategies, dteMin, dteMax, ivRank) {
+function buildEndpoint(strategies, dteMin, dteMax, ivRank, relaxed) {
   const s = strategies.join(',') || 'sell_put';
-  return `/api/scan?strategies=${encodeURIComponent(s)}&dte_min=${dteMin}&dte_max=${dteMax}&min_iv_rank=${ivRank}`;
+  return `/api/scan?strategies=${encodeURIComponent(s)}&dte_min=${dteMin}&dte_max=${dteMax}&min_iv_rank=${ivRank}${relaxed ? '&relaxed=true' : ''}`;
 }
 
 const LS_ACCOUNT_KEY = 'alpha_account_size';
@@ -107,6 +107,7 @@ export default function ScannerTab() {
   const [dteMin, setDteMin] = useState(7);
   const [dteMax, setDteMax] = useState(60);
   const [minIvRank, setMinIvRank] = useState(0);
+  const [relaxed, setRelaxed] = useState(false);
   const [hideEarningsRisk, setHideEarningsRisk] = useState(false);
   const [showStandards, setShowStandards] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
@@ -119,7 +120,7 @@ export default function ScannerTab() {
     localStorage.setItem(LS_ACCOUNT_KEY, String(v));
   };
 
-  const endpoint = buildEndpoint(selectedStrategies, dteMin, dteMax, minIvRank);
+  const endpoint = buildEndpoint(selectedStrategies, dteMin, dteMax, minIvRank, relaxed);
   const { data, loading, error, refetch } = useApi(endpoint, { timeout: 180_000 });
 
   useEffect(() => {
@@ -228,6 +229,26 @@ export default function ScannerTab() {
           </span>
         </div>
 
+        {/* ── 宽松模式开关 ── */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          <button
+            onClick={() => { setRelaxed(v => !v); setLastGoodOptions([]); }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              padding: '0.35rem 0.75rem', borderRadius: '8px', cursor: 'pointer',
+              fontSize: '0.78rem', transition: 'all 0.2s',
+              border: relaxed ? '1px solid rgba(251,191,36,0.5)' : '1px solid rgba(255,255,255,0.15)',
+              background: relaxed ? 'rgba(251,191,36,0.12)' : 'transparent',
+              color: relaxed ? '#fcd34d' : 'var(--text-secondary)',
+            }}
+          >
+            {relaxed ? '🔓 宽松模式（已开启）' : '🔒 机构严格模式'}
+          </button>
+          <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', paddingLeft: '4px' }}>
+            市场平静时放宽门槛，候选更多
+          </span>
+        </div>
+
         {/* 账户规模（仓位建议基准） */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
           <Tooltip text="设置账户规模后，每张期权卡片将显示建议合约数（单笔风险 ≤ 账户 2%）。">
@@ -321,6 +342,19 @@ export default function ScannerTab() {
         <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
           📦 数据来自缓存（1 小时内有效）· 点击「刷新数据」重新扫描
         </p>
+      )}
+
+      {/* 放宽筛选提示（自动放宽或手动宽松模式）*/}
+      {!isInitialLoad && data?.relaxed && rawOptions.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '0.6rem',
+          padding: '0.6rem 1rem', marginBottom: '1rem',
+          background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)',
+          borderRadius: 8, fontSize: '0.82rem', color: '#fcd34d',
+        }}>
+          🔓 {relaxed ? '已开启宽松模式' : '机构标准下无结果，已自动放宽筛选门槛'}
+          —— 以下候选未达机构级严格标准，请自行评估风险。
+        </div>
       )}
 
       {/* 卡片列表（始终保留，刷新时不消失） */}

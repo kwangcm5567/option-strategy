@@ -36,74 +36,62 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Alpha Options Strategy** — a full-stack app for quantitative options analysis. It scans the top 20 US large-cap stocks, filters for cash-secured puts and call-buying opportunities, and presents them in a React dashboard. The backend fetches live market data from Yahoo Finance via `yfinance` and performs all calculations server-side.
+**Alpha Options Strategy** — a full-stack app for quantitative options analysis. It scans ~50 US large-cap stocks and ETFs across four strategies (sell put / buy call / sell call / buy put), applies institutional-grade filters (σ-distance, Delta, ROC, IV premium, empirical win-rate, RSI/MACD timing), and presents ranked opportunities in a React dashboard. The backend fetches live data from Yahoo Finance via `yfinance` (optionally Financial Modeling Prep when `FMP_API_KEY` is set) and does all math server-side. Deployed on Render (`render.yaml`): backend web service + static frontend, both free tier.
 
 ## Running the App
 
 **Backend** (FastAPI, port 8000):
 ```bash
 cd backend
-# First time: activate the virtual environment
-source venv/Scripts/activate   # Windows/WSL
-# pip install fastapi uvicorn yfinance pandas vaderSentiment  (if venv not set up)
-python main.py
-# or: uvicorn main:app --reload --port 8000
+source venv/Scripts/activate          # venv is a Windows venv (Scripts/, not bin/)
+pip install -r requirements.txt       # first time
+python main.py                        # or: uvicorn main:app --reload --port 8000
 ```
+> WSL note: 直接调用 `./venv/Scripts/python.exe` 也能跑。临时脚本别放 `/tmp`（会被当成 Windows 路径），放进项目目录。
 
 **Frontend** (React + Vite, port 5173):
 ```bash
 cd frontend
-npm install   # first time only
+npm install                           # first time
 npm run dev
 ```
+Frontend API base comes from `VITE_API_URL` (see `frontend/.env.example`); empty → `http://localhost:8000`.
 
-**Lint frontend:**
+**Lint / build frontend:**
 ```bash
 cd frontend && npm run lint
+cd frontend && npm run build          # 推送重大改动前先本地构建验证
 ```
 
 There are no backend tests and no frontend test suite currently.
 
 ## Architecture
 
-### Backend (`backend/main.py`)
+### Backend — modular FastAPI (`backend/`)
 
-Single-file FastAPI app. All logic lives here — no separate modules.
+`main.py` is just the app shell + CORS + `/` and `/api/health`. Logic is split into:
+- `routers/` — `scanner` (`/api/scan`, `/api/analyze/{symbol}`, `/api/simulate-roll/{symbol}`), `chain`, `positions`, `market`, `earnings`, `news`, `portfolio`, `analytics`.
+- `services/` — `scanner` (core scan + filters + scoring), `greeks` (Black-Scholes via `math.erf`, no scipy), `cache` (in-memory dict, 1hr TTL), `news`.
+- `database.py` + `positions.db` — SQLite for tracked positions.
 
-**Key globals:**
-- `TICKERS` — hardcoded list of 20 large-cap US symbols scanned on every request.
-- `cache` — in-memory dict that stores results for 1 hour to avoid hammering Yahoo Finance. The first request after startup (or `?force_refresh=true`) can take 10–30 seconds.
+**Core scan — `services/scanner.py`:**
+- `TICKERS` — ~50 large-caps + ETFs.
+- `scan_options(strategies, dte_min, dte_max, min_iv_rank, relaxed)` — runs `_process_ticker` across all tickers in a `ThreadPoolExecutor(max_workers=8)`, dedups to one row per (symbol, strategy), returns top 50 by `score`.
+- `_process_row(...)` — per-option filtering + metrics. Hard gates (strict mode) for sell_put: distance 2–20%, annualized 8–80%, σ-distance ≥ 1.0, ROC ≤ 40, |Delta| 0.10–0.40, empirical win-rate ≥ 70%. A `relaxed` flag widens all of these (distance 1–30%, ann 3–120%, σ ≥ 0.7, ROC ≤ 60, |Delta| 0.05–0.50, win-rate ≥ 55%) and tags each result with `relaxed: true`.
+- `_calc_empirical_win_rate(...)` — rolling-window backtest (calendar DTE → trading days via `dte * 252 / 365`); precomputed once per ticker+DTE and reused across strikes.
+- `_score(opt)` — strategy-specific weighted score (sellers: ROC / IV-premium / Delta / σ-distance sweet spots; buyers: RSI+MACD timing / IV cheapness / Delta).
 
-**Core function — `calc_empirical_win_rate(history_df, dte, current_price, strike)`:**  
-Slides a rolling window of `dte` trading days across 1–2 years of price history and counts windows where the stock never breached the strike. Returns `(win_rate, total_windows, safe_windows, triggered_events)`. Overlapping breach windows are deduplicated into distinct "crash events."
-
-**API endpoints:**
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/top-options` | Scans all tickers for OTM puts with 6–15% annualized return and DTE of 7–14 or 30–45 days. Returns top 10 (one per symbol). Cached 1hr. |
-| `GET /api/analyze-option/{symbol}` | Deep-dive for a single option: 2yr rolling-window historical verification + VADER sentiment on recent news headlines. |
-| `GET /api/buy-calls` | Scans for ATM/slightly-OTM calls where HV > IV ("vol edge"). Categorizes as Short-Term (14–45 DTE) or Long-Term (90–180 DTE). |
-| `GET /api/earnings` | Returns next earnings date for each ticker, sorted ascending. |
-
-**Ranking logic for puts:**  
-`score = annualizedReturn + (winRateEstimate / 5) - (riskScore * 10)`  
-`riskScore = strike / support_level` where support level = 20th percentile close over last 6 months (lower is better).  
-Only options with `winRateEstimate > 70%` are included.
+**Empty-result auto-relax:** `/api/scan` first scans strict; if that yields nothing (and the caller didn't already request relaxed), it auto re-scans with `relaxed=True` and returns `relaxed: true` so the UI can flag it. Callers can also force relaxed via `?relaxed=true`.
 
 ### Frontend (`frontend/src/`)
 
-React 19 SPA, no routing library — tab state managed in `App.jsx` with `useState`.
+React 19 SPA, no routing library — tab state in `App.jsx` with `useState`. App mounts a fire-and-forget `/api/health` ping to warm the sleeping Render backend.
 
-**Component responsibilities:**
-- `App.jsx` — shell with three tabs (Puts / Calls / Earnings), manages puts fetch + loading/error state, owns `selectedOption` state that triggers the modal.
-- `OptionCard.jsx` — card rendering a single put opportunity; click triggers `AnalysisModal`.
-- `AnalysisModal.jsx` — fetches `/api/analyze-option/{symbol}` on mount; shows a Recharts price chart with a strike reference line, historical win-rate stats with drill-down crash events, and VADER-based news sentiment.
-- `BuyCallsTab.jsx` — self-contained tab that fetches `/api/buy-calls` and renders results.
-- `EarningsTab.jsx` — self-contained tab that fetches `/api/earnings`.
+**Active code lives in `frontend/src/tabs/`** — seven tabs: `scanner`, `strategy`, `positions`, `income`, `enhance`, `earnings`, `market`. Shared bits: `hooks/useApi.js` (`API_BASE` + `useApi` with 90s default timeout + visibility-aware retry), `components/ui/` (LoadingSpinner, Tooltip), `charts/`, `constants/tooltips.js`.
 
-**Styling:** CSS variables defined in `index.css` (dark theme with glass-morphism panels). Inline styles are used heavily throughout components alongside CSS classes from `index.css`/`App.css`.
+> ⚠️ `frontend/src/components/` top-level files were dead duplicates and have been deleted; only `components/ui/` is live. Don't recreate component code there — new tab UI goes under `tabs/`.
 
-**API calls** all point to `http://localhost:8000` hardcoded — no environment variable abstraction.
+**Styling:** CSS variables in `index.css` (dark glass-morphism). Inline styles are used heavily alongside `index.css` / `App.css` classes.
 
 ## Permissions
 
@@ -133,8 +121,9 @@ These rules are enforced by the project's Claude Code settings and cannot be ove
 
 ## Key Constraints & Gotchas
 
-- **No requirements.txt** — backend dependencies must be installed manually into the venv (`fastapi`, `uvicorn`, `yfinance`, `pandas`, `vaderSentiment`).
-- **Slow first load** — `/api/top-options` can take 10–30s on cold cache because it serially calls `yf.Ticker()` for all 20 stocks and iterates every option chain.
-- **In-memory cache only** — restarting the backend clears the cache; no persistence layer.
-- **CORS is wide open** (`allow_origins=["*"]`) by design for local dev.
-- The `calc_empirical_win_rate` function uses calendar DTE converted to trading days via `dte * 252 / 365`.
+- **Deps in `backend/requirements.txt`** (`fastapi`, `uvicorn`, `yfinance`, `pandas`, `vaderSentiment`). Greeks use `math.erf` — no scipy/numpy needed beyond what pandas pulls in.
+- **Slow first scan** — a cold scan across ~50 tickers takes ~20s+ even with the thread pool; results cache 1hr (keyed by strategy/DTE/IV-rank/mode). The frontend `/api/health` warm-up ping mitigates Render free-tier cold start (the service sleeps when idle).
+- **In-memory cache only** — restarting (or Render spin-down) clears it; no persistence layer. A disk cache wouldn't survive Render free-tier ephemeral fs, so it's intentionally not added.
+- **CORS is wide open** (`allow_origins=["*"]`).
+- `_calc_empirical_win_rate` converts calendar DTE to trading days via `dte * 252 / 365`.
+- **GitHub `origin/main` is the source of truth** — multiple agents push concurrently; always `git fetch` before assuming local is current.
