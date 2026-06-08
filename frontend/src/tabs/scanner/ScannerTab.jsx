@@ -337,6 +337,18 @@ export default function ScannerTab() {
       {/* 错误提示（非首次也显示） */}
       {!loading && error && <ErrorBox message={error} />}
 
+      {/* 收盘快照提示（美股未开盘 / 休市）*/}
+      {!loading && !error && data?.stale && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '0.6rem',
+          padding: '0.6rem 1rem', marginBottom: '1rem',
+          background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.3)',
+          borderRadius: 8, fontSize: '0.82rem', color: '#93c5fd',
+        }}>
+          🕒 美股当前未开盘，以下为最近收盘快照（盘前无实时报价，IV 用历史波动率估算）—— 开盘后会自动更新为实时数据。
+        </div>
+      )}
+
       {/* 缓存提示 */}
       {!loading && !error && data?.cached && (
         <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>

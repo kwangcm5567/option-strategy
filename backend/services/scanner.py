@@ -418,7 +418,10 @@ def _process_row(
         return None
 
     # IV：yfinance 原始值优先，不可靠时用历史波动率
-    if iv < 0.005:
+    # 盘前/休市时 bid=ask=0，yfinance 的 IV 退化为垃圾量化值（如 6.3/12.5/50），
+    # 会让 Delta 坍缩到 0、被门槛全过滤；此时一律改用历史波动率重估。
+    quotes_live = bid > 0 or ask > 0
+    if iv < 0.005 or not quotes_live:
         iv = hist_vol
 
     if volume < 3 or oi < 10:
@@ -611,6 +614,7 @@ def _process_row(
         "macdHistogram": macd_info.get("histogram")    if macd_info else None,
         "aboveSma200":   (current_price >= sma200)     if sma200 is not None else None,
         "relaxed": relaxed,
+        "stale": not quotes_live,
     }
     result["score"] = round(_score(result), 4)
     return result

@@ -85,10 +85,16 @@ def scan(
         mode = "rx" if rx else "std"
         return f"scan:{'|'.join(sorted(strategy_list))}:{dte_min}:{dte_max}:{min_iv_rank}:{mode}"
 
+    def _is_stale(rows) -> bool:
+        return bool(rows) and all(r.get("stale") for r in rows)
+
     if not force_refresh:
         cached = cache_svc.get(_key(relaxed), ttl_seconds=3600)
+        # 收盘快照缓存只信 5 分钟，开盘后尽快换成实时数据
+        if cached is not None and _is_stale(cached):
+            cached = cache_svc.get(_key(relaxed), ttl_seconds=300)
         if cached is not None:
-            return {"data": cached, "cached": True, "relaxed": relaxed}
+            return {"data": cached, "cached": True, "relaxed": relaxed, "stale": _is_stale(cached)}
 
     results = scan_options(
         strategies=strategy_list,
@@ -112,7 +118,12 @@ def scan(
         cache_svc.set(_key(True), results)
         auto_relaxed = True
 
-    return {"data": results, "cached": False, "relaxed": relaxed or auto_relaxed}
+    return {
+        "data": results,
+        "cached": False,
+        "relaxed": relaxed or auto_relaxed,
+        "stale": _is_stale(results),
+    }
 
 
 @router.get("/api/analyze/{symbol}")
