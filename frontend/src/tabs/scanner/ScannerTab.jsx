@@ -349,6 +349,18 @@ export default function ScannerTab() {
         </div>
       )}
 
+      {/* 兜底提示（所有质量门槛全开，仅供参考）*/}
+      {!loading && !error && data?.bestEffort && rawOptions.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '0.6rem',
+          padding: '0.6rem 1rem', marginBottom: '1rem',
+          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.35)',
+          borderRadius: 8, fontSize: '0.82rem', color: '#fca5a5',
+        }}>
+          ⛔ 严格与宽松标准下都无结果 —— 以下是放开所有质量门槛后按分数排出的最接近候选，<b>均未达标，仅供参考</b>，请务必自行评估风险。
+        </div>
+      )}
+
       {/* 缓存提示 */}
       {!loading && !error && data?.cached && (
         <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>

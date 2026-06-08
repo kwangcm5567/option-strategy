@@ -467,6 +467,14 @@ export default function OptionCard({ option, onClick, onQuickAdd, accountSize = 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', flexWrap: 'wrap' }}>
             <span style={{ fontSize: '1.6rem', fontWeight: 700, letterSpacing: '-0.02em' }}>{option.symbol}</span>
             <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>${option.currentPrice.toFixed(2)}</span>
+            {option.underlyingChangePct != null && (
+              <span style={{
+                fontSize: '0.78rem', fontWeight: 700,
+                color: option.underlyingChangePct >= 0 ? '#34d399' : '#f87171',
+              }}>
+                {option.stale ? '盘前 ' : ''}{option.underlyingChangePct >= 0 ? '▲' : '▼'}{Math.abs(option.underlyingChangePct).toFixed(2)}%
+              </span>
+            )}
             <span style={{
               background: cfg.bg, color: cfg.color,
               padding: '0.15rem 0.6rem', borderRadius: '999px',

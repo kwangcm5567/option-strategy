@@ -88,13 +88,25 @@ def scan(
     def _is_stale(rows) -> bool:
         return bool(rows) and all(r.get("stale") for r in rows)
 
+    def _is_best_effort(rows) -> bool:
+        return bool(rows) and all(r.get("bestEffort") for r in rows)
+
+    def _resp(rows, *, cached: bool, relaxed_flag: bool) -> dict:
+        return {
+            "data": rows,
+            "cached": cached,
+            "relaxed": relaxed_flag,
+            "stale": _is_stale(rows),
+            "bestEffort": _is_best_effort(rows),
+        }
+
     if not force_refresh:
         cached = cache_svc.get(_key(relaxed), ttl_seconds=3600)
         # 收盘快照缓存只信 5 分钟，开盘后尽快换成实时数据
         if cached is not None and _is_stale(cached):
             cached = cache_svc.get(_key(relaxed), ttl_seconds=300)
         if cached is not None:
-            return {"data": cached, "cached": True, "relaxed": relaxed, "stale": _is_stale(cached)}
+            return _resp(cached, cached=True, relaxed_flag=relaxed)
 
     results = scan_options(
         strategies=strategy_list,
@@ -118,12 +130,17 @@ def scan(
         cache_svc.set(_key(True), results)
         auto_relaxed = True
 
-    return {
-        "data": results,
-        "cached": False,
-        "relaxed": relaxed or auto_relaxed,
-        "stale": _is_stale(results),
-    }
+    # 放宽后仍空 → best_effort 兜底，门槛全开，保证至少给出候选（前端会醒目标注仅供参考）
+    if not results:
+        results = scan_options(
+            strategies=strategy_list,
+            dte_min=dte_min,
+            dte_max=dte_max,
+            min_iv_rank=min_iv_rank,
+            best_effort=True,
+        )
+
+    return _resp(results, cached=False, relaxed_flag=relaxed or auto_relaxed)
 
 
 @router.get("/api/analyze/{symbol}")

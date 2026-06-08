@@ -11,6 +11,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from . import cboe
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
 
 logger = logging.getLogger(__name__)
@@ -384,24 +385,33 @@ def _process_row(
     macd_info: dict | None = None,
     sma200: float | None = None,
     relaxed: bool = False,
+    best_effort: bool = False,
+    underlying_change_pct: float | None = None,
 ) -> dict | None:
     dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
     if dte <= 0:
         return None
 
+    # best_effort：所有质量门槛全开，只保留结构性约束，保证总能给出候选（仅供参考）。
+    if best_effort:
+        dist_min, dist_max, buy_dist_max = 0.0, 999.0, 999.0
+        ann_min_sp, ann_min_sc, ann_max = -999, -999, 999999
+        std_min, roc_max = 0.0, 999999
+        delta_min, delta_max, delta_buy_min = 0.0, 1.0, 0.0
+        pop_min, vol_min, oi_min = 0, 0, 0
     # 放宽模式：市场平静 / 熊市时放松机构级门槛，让用户至少看到候选。
-    if relaxed:
+    elif relaxed:
         dist_min, dist_max, buy_dist_max = 1.0, 30.0, 25.0
         ann_min_sp, ann_min_sc, ann_max = 3, 1.5, 120
         std_min, roc_max = 0.7, 60
         delta_min, delta_max, delta_buy_min = 0.05, 0.50, 0.20
-        pop_min = 55
+        pop_min, vol_min, oi_min = 55, 3, 10
     else:
         dist_min, dist_max, buy_dist_max = 2.0, 20.0, 15.0
         ann_min_sp, ann_min_sc, ann_max = 8, 3, 80
         std_min, roc_max = 1.0, 40
         delta_min, delta_max, delta_buy_min = 0.10, 0.40, 0.30
-        pop_min = 70
+        pop_min, vol_min, oi_min = 70, 3, 10
 
     strike = float(row["strike"])
     last_price = float(row["lastPrice"]) if not pd.isna(row["lastPrice"]) else 0.0
@@ -424,7 +434,7 @@ def _process_row(
     if iv < 0.005 or not quotes_live:
         iv = hist_vol
 
-    if volume < 3 or oi < 10:
+    if volume < vol_min or oi < oi_min:
         return None
 
     bid_ask_spread = round(ask - bid, 2)
@@ -478,7 +488,7 @@ def _process_row(
         if distance_pct > buy_dist_max:  # 买方不要太深 OTM
             return None
 
-    if strategy == "buy_call" and current_price < sma50:
+    if strategy == "buy_call" and current_price < sma50 and not best_effort:
         return None
 
     # ── 机构标准：σ-标准化距离（1.2σ 为甜点，≥ 1.0σ 为最低准入）──
@@ -615,6 +625,8 @@ def _process_row(
         "aboveSma200":   (current_price >= sma200)     if sma200 is not None else None,
         "relaxed": relaxed,
         "stale": not quotes_live,
+        "bestEffort": best_effort,
+        "underlyingChangePct": underlying_change_pct,
     }
     result["score"] = round(_score(result), 4)
     return result
@@ -633,6 +645,7 @@ def _process_ticker(
     needs_down: bool,
     needs_up: bool,
     relaxed: bool = False,
+    best_effort: bool = False,
 ) -> list[dict]:
     try:
         ticker = yf.Ticker(symbol)
@@ -665,7 +678,13 @@ def _process_ticker(
 
         gap_risk_count = int((daily_ret < -0.05).sum())
 
-        exp_dates = ticker.options
+        # 期权链主数据源：CBOE（免费、不封 IP、有真实 bid/ask/IV），失败回退 yfinance
+        cboe_data = cboe.fetch(symbol)
+        underlying_change_pct = cboe_data["change_pct"] if cboe_data else None
+        if cboe_data and cboe_data.get("current_price"):
+            current_price = cboe_data["current_price"]
+
+        exp_dates = sorted(cboe_data["chains"].keys()) if cboe_data else ticker.options
 
         valid_dates = []
         for date_str in exp_dates:
@@ -685,14 +704,21 @@ def _process_ticker(
 
         results = []
         for date_str, dte_val in valid_dates:
-            try:
-                chain = ticker.option_chain(date_str)
-            except Exception as e:
-                logger.warning("[scanner] %s %s option_chain 失败: %s", symbol, date_str, e)
-                continue
+            if cboe_data:
+                cc = cboe_data["chains"].get(date_str)
+                if cc is None:
+                    continue
+                puts_df, calls_df = cc["puts"], cc["calls"]
+            else:
+                try:
+                    chain = ticker.option_chain(date_str)
+                except Exception as e:
+                    logger.warning("[scanner] %s %s option_chain 失败: %s", symbol, date_str, e)
+                    continue
+                puts_df, calls_df = chain.puts, chain.calls
 
             for strategy in strategies:
-                rows = chain.puts if strategy in ("sell_put", "buy_put") else chain.calls
+                rows = puts_df if strategy in ("sell_put", "buy_put") else calls_df
                 for _, row in rows.iterrows():
                     item = _process_row(
                         row, symbol, current_price, history,
@@ -709,6 +735,8 @@ def _process_ticker(
                         macd_info=macd_info,
                         sma200=sma200,
                         relaxed=relaxed,
+                        best_effort=best_effort,
+                        underlying_change_pct=underlying_change_pct,
                     )
                     if item:
                         results.append(item)
@@ -728,6 +756,7 @@ def scan_options(
     dte_max: int = 60,
     min_iv_rank: float = 0,
     relaxed: bool = False,
+    best_effort: bool = False,
 ) -> list[dict]:
     if strategies is None:
         strategies = ["sell_put"]
@@ -745,7 +774,7 @@ def scan_options(
             pool.submit(
                 _process_ticker,
                 sym, strategies, today, dte_min, dte_max,
-                earnings_map, dividend_map, needs_down, needs_up, relaxed,
+                earnings_map, dividend_map, needs_down, needs_up, relaxed, best_effort,
             ): sym
             for sym in TICKERS
         }
