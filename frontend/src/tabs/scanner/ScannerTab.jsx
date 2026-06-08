@@ -361,6 +361,13 @@ export default function ScannerTab() {
         </div>
       )}
 
+      {/* 数据源标注 */}
+      {!loading && !error && data?.source && rawOptions.length > 0 && (
+        <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+          数据源：{{ tiger: 'Tiger 老虎证券', cboe: 'CBOE（延迟约15分钟）', yfinance: 'Yahoo Finance' }[data.source] || data.source}
+        </p>
+      )}
+
       {/* 缓存提示 */}
       {!loading && !error && data?.cached && (
         <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>

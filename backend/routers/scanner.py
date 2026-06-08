@@ -91,6 +91,10 @@ def scan(
     def _is_best_effort(rows) -> bool:
         return bool(rows) and all(r.get("bestEffort") for r in rows)
 
+    def _dominant_source(rows) -> str | None:
+        srcs = [r.get("source") for r in rows if r.get("source")]
+        return max(set(srcs), key=srcs.count) if srcs else None
+
     def _resp(rows, *, cached: bool, relaxed_flag: bool) -> dict:
         return {
             "data": rows,
@@ -98,6 +102,7 @@ def scan(
             "relaxed": relaxed_flag,
             "stale": _is_stale(rows),
             "bestEffort": _is_best_effort(rows),
+            "source": _dominant_source(rows),
         }
 
     if not force_refresh:

@@ -11,7 +11,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from . import cboe
+from . import cboe, tiger
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
 
 logger = logging.getLogger(__name__)
@@ -387,6 +387,7 @@ def _process_row(
     relaxed: bool = False,
     best_effort: bool = False,
     underlying_change_pct: float | None = None,
+    source: str | None = None,
 ) -> dict | None:
     dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
     if dte <= 0:
@@ -627,6 +628,7 @@ def _process_row(
         "stale": not quotes_live,
         "bestEffort": best_effort,
         "underlyingChangePct": underlying_change_pct,
+        "source": source,
     }
     result["score"] = round(_score(result), 4)
     return result
@@ -678,13 +680,18 @@ def _process_ticker(
 
         gap_risk_count = int((daily_ret < -0.05).sum())
 
-        # 期权链主数据源：CBOE（免费、不封 IP、有真实 bid/ask/IV），失败回退 yfinance
-        cboe_data = cboe.fetch(symbol)
-        underlying_change_pct = cboe_data["change_pct"] if cboe_data else None
-        if cboe_data and cboe_data.get("current_price"):
-            current_price = cboe_data["current_price"]
+        # 期权链数据源优先级：Tiger（券商级，需配置凭证）→ CBOE（免费不封IP）→ yfinance
+        src_data = tiger.fetch(symbol, today, dte_min, dte_max) if tiger.enabled() else None
+        source = "tiger" if src_data else None
+        if src_data is None:
+            src_data = cboe.fetch(symbol)
+            source = "cboe" if src_data else "yfinance"
 
-        exp_dates = sorted(cboe_data["chains"].keys()) if cboe_data else ticker.options
+        underlying_change_pct = src_data["change_pct"] if src_data else None
+        if src_data and src_data.get("current_price"):
+            current_price = src_data["current_price"]
+
+        exp_dates = sorted(src_data["chains"].keys()) if src_data else ticker.options
 
         valid_dates = []
         for date_str in exp_dates:
@@ -704,8 +711,8 @@ def _process_ticker(
 
         results = []
         for date_str, dte_val in valid_dates:
-            if cboe_data:
-                cc = cboe_data["chains"].get(date_str)
+            if src_data:
+                cc = src_data["chains"].get(date_str)
                 if cc is None:
                     continue
                 puts_df, calls_df = cc["puts"], cc["calls"]
@@ -737,6 +744,7 @@ def _process_ticker(
                         relaxed=relaxed,
                         best_effort=best_effort,
                         underlying_change_pct=underlying_change_pct,
+                        source=source,
                     )
                     if item:
                         results.append(item)
