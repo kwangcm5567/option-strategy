@@ -15,6 +15,7 @@ import requests
 logger = logging.getLogger("scanner")
 
 _URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{}.json"
+_HIST_URL = "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/{}.json"
 _HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # CBOE 的 CDN 按 IP 限制突发请求（8 并发会全部 429，~3 并发安全），
@@ -27,6 +28,11 @@ _cache_lock = threading.Lock()
 
 # 与 yfinance option_chain DataFrame 对齐的列
 _COLUMNS = ["strike", "lastPrice", "bid", "ask", "impliedVolatility", "volume", "openInterest"]
+
+# 历史日线一天才变一次，缓存放长
+_HIST_CACHE_TTL = 6 * 3600
+_HIST_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
+_hist_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 
 
 def _f(v, default: float = 0.0) -> float:
@@ -49,11 +55,15 @@ def _parse_osi(osym: str, root: str) -> tuple[str, str, float] | None:
 
 
 def _get_json(symbol: str) -> dict | None:
+    return _get_json_url(_URL.format(symbol.upper()), symbol)
+
+
+def _get_json_url(url: str, symbol: str) -> dict | None:
     """限并发 + 429 退避，返回原始 JSON；失败返回 None。"""
     for attempt in range(3):
         with _SEM:
             try:
-                resp = requests.get(_URL.format(symbol.upper()), headers=_HEADERS, timeout=15)
+                resp = requests.get(url, headers=_HEADERS, timeout=15)
             except Exception as e:
                 logger.warning("[cboe] %s 请求异常: %s", symbol, e)
                 return None
@@ -134,3 +144,35 @@ def _build(symbol: str) -> dict | None:
     except Exception as e:
         logger.warning("[cboe] %s 失败: %s", symbol, e)
         return None
+
+
+def fetch_history(symbol: str, lookback: int = 260) -> pd.DataFrame:
+    """约 1 年日线（Open/High/Low/Close/Volume，DatetimeIndex，已复权）；失败返回空表。"""
+    now = time.time()
+    with _cache_lock:
+        hit = _hist_cache.get(symbol)
+        if hit and now - hit[0] < _HIST_CACHE_TTL:
+            return hit[1]
+
+    df = _build_history(symbol, lookback)
+    with _cache_lock:
+        _hist_cache[symbol] = (now, df)
+    return df
+
+
+def _build_history(symbol: str, lookback: int) -> pd.DataFrame:
+    try:
+        payload = _get_json_url(_HIST_URL.format(symbol.upper()), symbol)
+        rows = (payload or {}).get("data") or []
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index().rename(columns={
+            "open": "Open", "high": "High", "low": "Low",
+            "close": "Close", "volume": "Volume",
+        })
+        return df[_HIST_COLUMNS].tail(lookback)
+    except Exception as e:
+        logger.warning("[cboe] %s 历史失败: %s", symbol, e)
+        return pd.DataFrame()

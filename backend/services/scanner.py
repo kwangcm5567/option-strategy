@@ -651,7 +651,10 @@ def _process_ticker(
 ) -> list[dict]:
     try:
         ticker = yf.Ticker(symbol)
-        history = ticker.history(period="1y")
+        # 历史日线优先 CBOE（不封机房 IP、无配额），yfinance 仅兜底
+        history = cboe.fetch_history(symbol)
+        if history.empty:
+            history = ticker.history(period="1y")
         if history.empty:
             return []
 
