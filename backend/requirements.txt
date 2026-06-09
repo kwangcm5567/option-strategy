@@ -3,5 +3,5 @@ uvicorn[standard]>=0.27.0
 yfinance>=0.2.37
 pandas>=2.2.0
 vaderSentiment>=3.3.2
-# tigeropen 为可选依赖（启用 Tiger 数据源才需要），单独安装以免拖垮主部署。
-# services/tiger.py 已做懒加载：未安装时自动回退 CBOE。
+tigeropen==3.5.9
+# services/tiger.py 已做懒加载：未设置 TIGER_* 环境变量时自动回退 CBOE。
