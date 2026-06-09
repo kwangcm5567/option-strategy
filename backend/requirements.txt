@@ -3,5 +3,3 @@ uvicorn[standard]>=0.27.0
 yfinance>=0.2.37
 pandas>=2.2.0
 vaderSentiment>=3.3.2
-tigeropen==3.5.9
-# services/tiger.py 已做懒加载：未设置 TIGER_* 环境变量时自动回退 CBOE。

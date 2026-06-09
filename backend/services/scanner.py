@@ -11,7 +11,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from . import cboe, tiger
+from . import cboe
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
 
 logger = logging.getLogger(__name__)
@@ -680,12 +680,9 @@ def _process_ticker(
 
         gap_risk_count = int((daily_ret < -0.05).sum())
 
-        # 期权链数据源优先级：Tiger（券商级，需配置凭证）→ CBOE（免费不封IP）→ yfinance
-        src_data = tiger.fetch(symbol, today, dte_min, dte_max) if tiger.enabled() else None
-        source = "tiger" if src_data else None
-        if src_data is None:
-            src_data = cboe.fetch(symbol)
-            source = "cboe" if src_data else "yfinance"
+        # 期权链数据源：CBOE（免费、不封 IP）→ yfinance 兜底
+        src_data = cboe.fetch(symbol)
+        source = "cboe" if src_data else "yfinance"
 
         underlying_change_pct = src_data["change_pct"] if src_data else None
         if src_data and src_data.get("current_price"):
