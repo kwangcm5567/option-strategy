@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 const _raw = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 export const API_BASE = _raw.startsWith('http') ? _raw : `https://${_raw}`;
 
-export function useApi(endpoint, { timeout = 90_000 } = {}) {
+export function useApi(endpoint, { timeout = 120_000 } = {}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(!!endpoint);
   const [error, setError] = useState(null);

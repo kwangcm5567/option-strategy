@@ -1,0 +1,18 @@
+name: keep-warm
+
+# 定时打 Render 后端 /api/health，避免免费层闲置休眠导致冷启动（冷扫描 ~115s）。
+# GitHub 定时任务有延迟，仅作基础保活；要更稳可再叠加 UptimeRobot（5 分钟探测）。
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ping health
+        run: |
+          curl -sS -m 90 --retry 2 --retry-delay 10 \
+            https://option-strategy-api.onrender.com/api/health || true
