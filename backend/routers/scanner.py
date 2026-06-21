@@ -83,7 +83,7 @@ def scan(
 
     def _key(rx: bool) -> str:
         mode = "rx" if rx else "std"
-        return f"scan:{'|'.join(sorted(strategy_list))}:{dte_min}:{dte_max}:{min_iv_rank}:{mode}"
+        return f"scan:{'|'.join(sorted(strategy_list))}:{dte_min}:{dte_max}:{float(min_iv_rank)}:{mode}"
 
     def _is_stale(rows) -> bool:
         return bool(rows) and all(r.get("stale") for r in rows)
