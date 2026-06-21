@@ -9,8 +9,11 @@ DB_PATH = Path(__file__).parent / "positions.db"
 
 
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    # timeout：写锁被占用时最多等 10s 再报错（替代立刻 "database is locked"）
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row   # 让查询结果可以用列名访问
+    # WAL：读写不互斥，扫描并发期间其它请求不再被锁死
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 

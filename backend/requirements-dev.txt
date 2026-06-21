@@ -1,0 +1,4 @@
+# 仅本地开发/测试用，Render 部署不安装这些。
+# 运行测试： pip install -r requirements-dev.txt && pytest
+-r requirements.txt
+pytest>=8.0

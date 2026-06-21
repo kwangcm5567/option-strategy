@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
 from routers import scanner, chain, positions, market, earnings, news, portfolio, analytics
 from services import cache as cache_svc
+from services import warmup
 
 _start_time = time.time()
 
@@ -19,6 +20,7 @@ app.add_middleware(
 )
 
 init_db()
+warmup.start()
 
 app.include_router(scanner.router)
 app.include_router(chain.router)
@@ -35,7 +37,7 @@ def root():
     return {"status": "ok", "version": "2.0"}
 
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
     return {
         "status": "ok",
