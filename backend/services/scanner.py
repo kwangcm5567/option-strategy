@@ -40,6 +40,9 @@ TICKERS = [
     "BX", "PLTR",
 ]
 
+# ETF 没有财报，跳过财报日历查询（否则 yfinance 返回一堆 404 噪音）
+ETFS = {"SPY", "QQQ", "IWM", "GLD"}
+
 # ─── 批量拉取财报日期（FMP 优先，yfinance fallback）────────────────────────
 
 def _fetch_earnings_map() -> dict[str, int]:
@@ -69,7 +72,7 @@ def _fetch_earnings_map() -> dict[str, int]:
         except Exception:
             pass
 
-    for sym in [s for s in TICKERS if s not in result]:
+    for sym in [s for s in TICKERS if s not in result and s not in ETFS]:
         try:
             cal = yf.Ticker(sym).calendar
             dt = None
