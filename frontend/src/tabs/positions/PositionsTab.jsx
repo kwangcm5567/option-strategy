@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Trash2, TrendingUp, TrendingDown, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Trash2, TrendingUp, TrendingDown, X, ChevronDown, ChevronRight, Upload } from 'lucide-react';
 import { apiFetch } from '../../hooks/useApi';
 import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
@@ -547,6 +547,64 @@ function exportPositionsCsv(positions) {
 
 // ── 主组件 ───────────────────────────────────────────────────────────────────
 
+// ── 正股持仓 ─────────────────────────────────────────────────────────────────
+
+function StockHoldings({ stocks, onDelete }) {
+  const [open, setOpen] = useState(true);
+  if (stocks.length === 0) return null;
+
+  const totalMV = stocks.reduce((s, r) => s + (r.market_value || 0), 0);
+  const totalPnl = stocks.reduce((s, r) => s + (r.pnl || 0), 0);
+
+  return (
+    <div className="glass-panel" style={{ padding: '1.25rem', marginTop: '1.5rem' }}>
+      <div onClick={() => setOpen(v => !v)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: open ? '1rem' : 0 }}>
+        <h3 style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />} 📦 正股持仓
+          <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.8rem' }}>{stocks.length} 只</span>
+        </h3>
+        <span style={{ fontSize: '0.85rem', color: totalPnl >= 0 ? '#10b981' : '#ef4444' }}>
+          市值 ${totalMV.toLocaleString()} · 浮盈 {totalPnl >= 0 ? '+' : ''}${totalPnl.toLocaleString()}
+        </span>
+      </div>
+      {open && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+            <thead>
+              <tr style={{ color: 'var(--text-secondary)', textAlign: 'right', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                <th style={{ textAlign: 'left', padding: '0.4rem 0.6rem' }}>代码</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>股数</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>成本价</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>现价</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>市值</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>盈亏</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {stocks.map(r => (
+                <tr key={r.id} style={{ textAlign: 'right', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <td style={{ textAlign: 'left', padding: '0.4rem 0.6rem', fontWeight: 600 }}>{r.symbol}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>{r.quantity}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>${r.avg_price?.toFixed(2)}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>{r.current_price != null ? `$${r.current_price.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>{r.market_value != null ? `$${r.market_value.toLocaleString()}` : '—'}</td>
+                  <td style={{ padding: '0.4rem 0.6rem', color: (r.pnl ?? 0) >= 0 ? '#10b981' : '#ef4444' }}>
+                    {r.pnl != null ? `${r.pnl >= 0 ? '+' : ''}$${r.pnl.toLocaleString()} (${r.pnl_pct >= 0 ? '+' : ''}${r.pnl_pct}%)` : '—'}
+                  </td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>
+                    <button onClick={() => onDelete(r.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5' }}><Trash2 size={14} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PositionsTab() {
   const [allPositions, setAllPositions] = useState([]);
   const [error, setError] = useState(null);
@@ -557,7 +615,10 @@ export default function PositionsTab() {
   const [greeks, setGreeks] = useState(null);
   const [pnlLoading, setPnlLoading] = useState(false);
   const [closingPos, setClosingPos] = useState(null);
+  const [stocks, setStocks] = useState([]);
+  const [importing, setImporting] = useState(false);
   const pnlTimerRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const openPositions = allPositions.filter(p => p.status === 'open' || !p.status);
   const closedPositions = allPositions.filter(p => p.status === 'closed');
@@ -566,6 +627,43 @@ export default function PositionsTab() {
     try {
       const res = await apiFetch('GET', '/api/positions');
       setAllPositions(res.data || []);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const loadStocks = async () => {
+    try {
+      const res = await apiFetch('GET', '/api/stocks');
+      setStocks(res.data || []);
+    } catch {
+      // 正股加载失败不阻断主界面
+    }
+  };
+
+  const handleImport = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const content = await file.text();
+      const res = await apiFetch('POST', '/api/positions/import-tiger', { content });
+      await Promise.all([load(), loadStocks()]);
+      alert(`导入完成：期权 ${res.options_imported} 张、正股 ${res.stocks_imported} 只、跳过 ${res.skipped} 行。`);
+    } catch (e) {
+      setError(`导入失败：${e.message}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleDeleteStock = async (id) => {
+    if (!confirm('确定要删除这条正股记录吗？')) return;
+    try {
+      await apiFetch('DELETE', `/api/stocks/${id}`);
+      await loadStocks();
     } catch (e) {
       setError(e.message);
     }
@@ -592,6 +690,7 @@ export default function PositionsTab() {
 
   useEffect(() => {
     load();
+    loadStocks();
   }, []);
 
   useEffect(() => {
@@ -674,6 +773,18 @@ export default function PositionsTab() {
               ↓ 导出 CSV
             </button>
           )}
+          <input ref={fileInputRef} type="file" accept=".csv" onChange={handleImport} style={{ display: 'none' }} />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
+              color: 'var(--text-secondary)', padding: '0.5rem 0.85rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem',
+            }}
+          >
+            <Upload size={14} /> {importing ? '导入中…' : '导入老虎 CSV'}
+          </button>
           <button
             onClick={() => setShowForm(v => !v)}
             style={{
@@ -757,29 +868,36 @@ export default function PositionsTab() {
       )}
 
       {/* 持仓列表 */}
-      {openPositions.length === 0 && closedPositions.length === 0 ? (
+      {openPositions.length === 0 && closedPositions.length === 0 && stocks.length === 0 ? (
         <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
-          <p style={{ color: 'var(--text-secondary)' }}>还没有任何持仓记录，点击「新增持仓」开始追踪。</p>
+          <p style={{ color: 'var(--text-secondary)' }}>还没有任何持仓记录，点击「新增持仓」或「导入老虎 CSV」开始追踪。</p>
         </div>
       ) : (
         <>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {openPositions.map(pos => (
-              <PositionCard
-                key={pos.id}
-                pos={pos}
-                pnl={pnlMap[pos.id]}
-                onDelete={handleDelete}
-                onClose={setClosingPos}
-              />
-            ))}
-          </div>
+          {(openPositions.length > 0 || closedPositions.length > 0) && (
+            <>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {openPositions.map(pos => (
+                  <PositionCard
+                    key={pos.id}
+                    pos={pos}
+                    pnl={pnlMap[pos.id]}
+                    onDelete={handleDelete}
+                    onClose={setClosingPos}
+                  />
+                ))}
+              </div>
 
-          {/* 压力测试 */}
-          <StressPanel pnlData={Object.values(pnlMap)} />
+              {/* 压力测试 */}
+              <StressPanel pnlData={Object.values(pnlMap)} />
 
-          {/* 已平仓记录 */}
-          <ClosedSection positions={closedPositions} />
+              {/* 已平仓记录 */}
+              <ClosedSection positions={closedPositions} />
+            </>
+          )}
+
+          {/* 正股持仓 */}
+          <StockHoldings stocks={stocks} onDelete={handleDeleteStock} />
         </>
       )}
 

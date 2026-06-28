@@ -211,6 +211,81 @@ def assign_to_wheel(position_id: int):
     return {"wheel_cycle_id": cycle_id}
 
 
+# ── 老虎 CSV 导入 + 正股持仓 ──────────────────────────────────────────────────
+
+class ImportIn(BaseModel):
+    content: str
+
+
+@router.post("/api/positions/import-tiger")
+def import_tiger(body: ImportIn):
+    from services import tiger_import
+
+    parsed = tiger_import.parse(body.content)
+    opt_added = 0
+    stock_added = 0
+
+    with get_conn() as conn:
+        for o in parsed["options"]:
+            dup = conn.execute(
+                "SELECT 1 FROM positions WHERE symbol=? AND strategy=? AND strike=? AND expiration_date=? AND (status='open' OR status IS NULL)",
+                (o["symbol"], o["strategy"], o["strike"], o["expiration_date"]),
+            ).fetchone()
+            if dup:
+                continue
+            conn.execute(
+                """
+                INSERT INTO positions (symbol, strategy, strike, premium, quantity,
+                                       expiration_date, open_date, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (o["symbol"], o["strategy"], o["strike"], o["premium"], o["quantity"],
+                 o["expiration_date"], o["open_date"], o["notes"]),
+            )
+            opt_added += 1
+        for s in parsed["stocks"]:
+            conn.execute(
+                """
+                INSERT INTO stock_holdings (symbol, quantity, avg_price, notes)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET quantity=excluded.quantity, avg_price=excluded.avg_price
+                """,
+                (s["symbol"], s["quantity"], s["avg_price"], s["notes"]),
+            )
+            stock_added += 1
+        conn.commit()
+
+    return {"options_imported": opt_added, "stocks_imported": stock_added, "skipped": parsed["skipped"]}
+
+
+@router.get("/api/stocks")
+def list_stocks():
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM stock_holdings ORDER BY symbol ASC").fetchall()]
+    prices = _fetch_current_prices([r["symbol"] for r in rows]) if rows else {}
+    for r in rows:
+        cur = prices.get(r["symbol"])
+        r["current_price"] = round(cur, 2) if cur else None
+        if cur:
+            r["market_value"] = round(cur * r["quantity"], 2)
+            cost = r["avg_price"] * r["quantity"]
+            r["pnl"] = round((cur - r["avg_price"]) * r["quantity"], 2)
+            r["pnl_pct"] = round((cur - r["avg_price"]) / r["avg_price"] * 100, 2) if r["avg_price"] else None
+        else:
+            r["market_value"] = r["pnl"] = r["pnl_pct"] = None
+    return {"data": rows}
+
+
+@router.delete("/api/stocks/{stock_id}")
+def delete_stock(stock_id: int):
+    with get_conn() as conn:
+        affected = conn.execute("DELETE FROM stock_holdings WHERE id = ?", (stock_id,)).rowcount
+        conn.commit()
+    if affected == 0:
+        raise HTTPException(status_code=404, detail="找不到该正股记录")
+    return {"ok": True}
+
+
 # ── 实时 PnL ─────────────────────────────────────────────────────────────────
 
 @router.get("/api/portfolio/pnl")

@@ -39,6 +39,16 @@ def init_db():
                 close_reason    TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_holdings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol      TEXT    NOT NULL UNIQUE,
+                quantity    INTEGER NOT NULL,
+                avg_price   REAL    NOT NULL,
+                notes       TEXT,
+                created_at  TEXT    DEFAULT (datetime('now'))
+            )
+        """)
         # 为旧表补齐新列（迁移兼容）
         existing = {row[1] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
         for col, definition in [
