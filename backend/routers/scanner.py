@@ -10,7 +10,7 @@ import requests
 import yfinance as yf
 from fastapi import APIRouter, Query
 
-from services import cache as cache_svc
+from services import cache as cache_svc, cboe
 from services.scanner import scan_options, _calc_empirical_win_rate
 from services.greeks import calc_black_scholes
 
@@ -263,63 +263,64 @@ def simulate_roll(
     dte: int,
 ):
     """
-    模拟 Rolling Out 备用计划。
-    假设股票在到期时跌破行权价 2% (即 S = strike * 0.98)。
-    平仓成本 (Buy To Close) 约等于内在价值 (strike - S) = strike * 0.02。
-    寻找 30-60 天后到期的期权，找到能覆盖此平仓成本的新行权价。
+    模拟 Roll Down & Out 备用计划（数据走 CBOE）。
+
+    平仓成本 (Buy To Close) 取当前持仓 put 的真实市价（bid/ask 中间价），
+    再在比当前 DTE 多 20~60 天的远期里，找能覆盖该成本、行权价更低的新 put。
     """
-    import yfinance as yf
-    from datetime import datetime
-    
-    ticker = yf.Ticker(symbol)
+    data = cboe.fetch(symbol)
+    chains = (data or {}).get("chains")
+    if not chains:
+        return {"status": "error", "message": "无法获取期权链数据（CBOE 暂不可用）。"}
+
     today = datetime.now()
-    exp_dates = ticker.options
-    
-    # 模拟平仓成本 (假设到期时跌破行权价2%，时间价值几乎为0)
-    simulated_stock_price = strike * 0.98
-    btc_cost = strike - simulated_stock_price
-    
-    # 我们希望找到一个 Net Credit
-    target_premium = btc_cost + (premium * 0.2) # 尝试多赚 20% 原权利金
-    
+
+    def _exp_dte(exp: str) -> int:
+        return (datetime.strptime(exp, "%Y-%m-%d") - today).days
+
+    def _mid(row) -> float:
+        bid, ask = float(row["bid"]), float(row["ask"])
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        return float(row["lastPrice"])
+
+    def _nearest_strike(df, target: float):
+        if df.empty:
+            return None
+        return df.loc[(df["strike"] - target).abs().idxmin()]
+
+    # 平仓成本 = 当前这张 put 的实时市价（找最接近持仓到期日的那条链）
+    cur_exp = min(chains, key=lambda e: abs(_exp_dte(e) - dte))
+    cur_row = _nearest_strike(chains[cur_exp]["puts"], strike)
+    btc_cost = _mid(cur_row) if cur_row is not None else strike * 0.02
+
+    target_premium = btc_cost + premium * 0.2  # 滚后还想多赚 20% 原权利金
+
     best_roll = None
-    
-    for date_str in exp_dates:
-        roll_dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
-        # 寻找比当前 DTE 多 30~60 天的远期合约
-        if dte + 20 <= roll_dte <= dte + 60:
-            try:
-                chain = ticker.option_chain(date_str)
-                puts = chain.puts
-                
-                # 寻找能覆盖 target_premium 的最低行权价
-                # 优先满足：Premium >= target_premium 且 Strike <= current_strike
-                valid_puts = puts[
-                    (puts['lastPrice'] >= target_premium) & 
-                    (puts['strike'] <= strike)
-                ]
-                
-                if not valid_puts.empty:
-                    # 取行权价最低的那个 (最安全)
-                    best_put = valid_puts.sort_values(by='strike', ascending=True).iloc[0]
-                    
-                    if best_roll is None or best_put['strike'] < best_roll['strike']:
-                        best_roll = {
-                            "roll_date": date_str,
-                            "roll_dte": roll_dte,
-                            "roll_strike": float(best_put['strike']),
-                            "roll_premium": float(best_put['lastPrice']),
-                            "btc_cost": round(btc_cost, 2),
-                            "net_credit": round(float(best_put['lastPrice']) - btc_cost, 2)
-                        }
-            except Exception:
-                continue
-                
+    for exp, slot in chains.items():
+        roll_dte = _exp_dte(exp)
+        if not (dte + 20 <= roll_dte <= dte + 60):
+            continue
+        puts = slot["puts"]
+        if puts.empty:
+            continue
+        puts = puts.assign(mid=puts.apply(_mid, axis=1))
+        valid = puts[(puts["mid"] >= target_premium) & (puts["strike"] <= strike)]
+        if valid.empty:
+            continue
+        best = valid.sort_values(by="strike").iloc[0]  # 行权价最低 = 最安全
+        if best_roll is None or best["strike"] < best_roll["roll_strike"]:
+            best_roll = {
+                "roll_date": exp,
+                "roll_dte": roll_dte,
+                "roll_strike": float(best["strike"]),
+                "roll_premium": round(float(best["mid"]), 2),
+                "btc_cost": round(btc_cost, 2),
+                "net_credit": round(float(best["mid"]) - btc_cost, 2),
+            }
+
     if not best_roll:
-        return {"status": "error", "message": "在当前保守波动率下，难以找到理想的向下延期 (Roll Down & Out) 机会。建议接盘做 Wheel Strategy。"}
-        
-    return {
-        "status": "success",
-        "data": best_roll
-    }
+        return {"status": "error", "message": "在当前波动率下，难以找到理想的向下延期 (Roll Down & Out) 机会。建议接盘做 Wheel Strategy。"}
+
+    return {"status": "success", "data": best_roll}
 

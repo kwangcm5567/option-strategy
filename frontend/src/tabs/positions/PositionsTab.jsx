@@ -82,7 +82,8 @@ function RollAlert({ symbol, strike, premium, expirationDate }) {
     setLoading(true);
     try {
       const res = await apiFetch('GET', `/api/simulate-roll/${symbol}?strike=${strike}&premium=${premium}&dte=${dte}`);
-      setRollData(res);
+      if (res.status === 'success') setRollData(res.data);
+      else setRollData({ error: res.message || '无法获取滚仓方案' });
     } catch {
       setRollData({ error: '无法获取滚仓方案' });
     } finally {
@@ -104,13 +105,15 @@ function RollAlert({ symbol, strike, premium, expirationDate }) {
         <div style={{ marginTop: '0.6rem', padding: '0.5rem 0.65rem', background: 'rgba(0,0,0,0.2)', borderRadius: 6, lineHeight: 1.7 }}>
           <div style={{ color: '#f59e0b', fontWeight: 600 }}>建议滚仓方案：</div>
           <div style={{ color: 'var(--text-secondary)' }}>
-            新到期日 <span style={{ color: 'var(--text-primary)' }}>{rollData.newExpiration}</span> ·
-            新行权价 <span style={{ color: 'var(--text-primary)' }}>${rollData.newStrike}</span> ·
-            净权利金 <span style={{ color: rollData.netCredit >= 0 ? '#10b981' : '#ef4444' }}>
-              {rollData.netCredit >= 0 ? '+' : ''}${rollData.netCredit?.toFixed(2)}
+            新到期日 <span style={{ color: 'var(--text-primary)' }}>{rollData.roll_date}</span> ·
+            新行权价 <span style={{ color: 'var(--text-primary)' }}>${rollData.roll_strike}</span> ·
+            净权利金 <span style={{ color: rollData.net_credit >= 0 ? '#10b981' : '#ef4444' }}>
+              {rollData.net_credit >= 0 ? '+' : ''}${rollData.net_credit?.toFixed(2)}
             </span>
           </div>
-          {rollData.note && <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>{rollData.note}</div>}
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+            距今 {rollData.roll_dte} 天 · 新权利金 ${rollData.roll_premium?.toFixed(2)} · 假设平仓成本 ${rollData.btc_cost?.toFixed(2)}
+          </div>
         </div>
       )}
       {open && rollData?.error && (
