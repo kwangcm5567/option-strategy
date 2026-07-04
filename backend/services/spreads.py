@@ -311,7 +311,9 @@ def _scan_debit_verticals(df: pd.DataFrame, spot: float, dte: int, kind: str, ex
             continue
         if kind == "bear_put" and not (spot * 0.95 <= buy_k <= spot * 1.05):
             continue
-        for j in (i + 1, i + 2, i + 3):
+        # bull_call 卖更高行权价 call；bear_put 卖更低行权价 put，方向相反
+        candidates = (i + 1, i + 2, i + 3) if kind == "bull_call" else (i - 1, i - 2, i - 3)
+        for j in candidates:
             if not (0 <= j < len(df)):
                 continue
             sell_k = float(df.iloc[j]["strike"])
