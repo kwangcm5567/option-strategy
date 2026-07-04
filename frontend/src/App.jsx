@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, Briefcase, Calendar, TrendingUp, Layers, DollarSign } from 'lucide-react';
+import { Search, BarChart2, Briefcase, Calendar, TrendingUp, Layers, DollarSign, GitMerge, Activity, Shield } from 'lucide-react';
 import ScannerTab from './tabs/scanner/ScannerTab';
 import StrategyTab from './tabs/strategy/StrategyTab';
+import SpreadsTab from './tabs/spreads/SpreadsTab';
 import PositionsTab from './tabs/positions/PositionsTab';
+import RiskTab from './tabs/risk/RiskTab';
 import EarningsTab from './tabs/earnings/EarningsTab';
 import MarketTab from './tabs/market/MarketTab';
+import VolTab from './tabs/vol/VolTab';
 import EnhanceTab from './tabs/enhance/EnhanceTab';
 import IncomeTab from './tabs/income/IncomeTab';
 import useExpiryReminder from './hooks/useExpiryReminder';
@@ -13,10 +16,13 @@ import './index.css';
 
 const TABS = [
   { id: 'scanner',   label: '扫描仪',   icon: Search,      component: ScannerTab   },
+  { id: 'spreads',   label: '价差扫描', icon: GitMerge,     component: SpreadsTab   },
   { id: 'strategy',  label: '策略构建', icon: BarChart2,    component: StrategyTab  },
   { id: 'positions', label: '持仓追踪', icon: Briefcase,    component: PositionsTab },
+  { id: 'risk',      label: '风险台',   icon: Shield,       component: RiskTab      },
   { id: 'income',    label: '收入分析', icon: DollarSign,   component: IncomeTab    },
   { id: 'enhance',   label: '组合增强', icon: Layers,       component: EnhanceTab   },
+  { id: 'vol',       label: '波动率',   icon: Activity,     component: VolTab       },
   { id: 'earnings',  label: '财报雷达', icon: Calendar,     component: EarningsTab  },
   { id: 'market',    label: '市场情绪', icon: TrendingUp,   component: MarketTab    },
 ];
