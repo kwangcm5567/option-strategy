@@ -5,6 +5,7 @@ import logging
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -42,6 +43,54 @@ TICKERS = [
 
 # ETF 没有财报，跳过财报日历查询（否则 yfinance 返回一堆 404 噪音）
 ETFS = {"SPY", "QQQ", "IWM", "GLD"}
+
+
+# ─── 过滤门槛（三档，调参只改这里）──────────────────────────────────────────
+
+@dataclass(frozen=True)
+class FilterThresholds:
+    dist_min: float        # 卖方：行权价距现价最小 %
+    dist_max: float        # 卖方：距离最大 %
+    buy_dist_max: float    # 买方：距离最大 %（不要太深 OTM）
+    ann_min_sp: float      # sell_put 年化收益下限 %
+    ann_min_sc: float      # sell_call 年化收益下限 %
+    ann_max: float         # 年化收益上限 %（过高=风险异常）
+    std_min: float         # σ-距离下限
+    roc_max: float         # ROC 上限
+    delta_min: float       # 卖方 |Delta| 下限
+    delta_max: float       # 卖方 |Delta| 上限
+    delta_buy_min: float   # 买方 |Delta| 下限
+    pop_min: float         # 经验胜率下限 %
+    vol_min: int           # 当日成交量下限
+    oi_min: int            # 未平仓量下限
+
+
+FILTER_PROFILES = {
+    # 机构级默认门槛
+    "strict": FilterThresholds(
+        dist_min=2.0, dist_max=20.0, buy_dist_max=15.0,
+        ann_min_sp=8, ann_min_sc=3, ann_max=80,
+        std_min=1.0, roc_max=40,
+        delta_min=0.10, delta_max=0.40, delta_buy_min=0.30,
+        pop_min=70, vol_min=3, oi_min=10,
+    ),
+    # 放宽模式：市场平静 / 熊市时放松机构级门槛，让用户至少看到候选
+    "relaxed": FilterThresholds(
+        dist_min=1.0, dist_max=30.0, buy_dist_max=25.0,
+        ann_min_sp=3, ann_min_sc=1.5, ann_max=120,
+        std_min=0.7, roc_max=60,
+        delta_min=0.05, delta_max=0.50, delta_buy_min=0.20,
+        pop_min=55, vol_min=3, oi_min=10,
+    ),
+    # best_effort：质量门槛全开，只保留结构性约束，保证总能给出候选（仅供参考）
+    "best_effort": FilterThresholds(
+        dist_min=0.0, dist_max=999.0, buy_dist_max=999.0,
+        ann_min_sp=-999, ann_min_sc=-999, ann_max=999999,
+        std_min=0.0, roc_max=999999,
+        delta_min=0.0, delta_max=1.0, delta_buy_min=0.0,
+        pop_min=0, vol_min=0, oi_min=0,
+    ),
+}
 
 # ─── 批量拉取财报日期（FMP 优先，yfinance fallback）────────────────────────
 
@@ -396,26 +445,7 @@ def _process_row(
     if dte <= 0:
         return None
 
-    # best_effort：所有质量门槛全开，只保留结构性约束，保证总能给出候选（仅供参考）。
-    if best_effort:
-        dist_min, dist_max, buy_dist_max = 0.0, 999.0, 999.0
-        ann_min_sp, ann_min_sc, ann_max = -999, -999, 999999
-        std_min, roc_max = 0.0, 999999
-        delta_min, delta_max, delta_buy_min = 0.0, 1.0, 0.0
-        pop_min, vol_min, oi_min = 0, 0, 0
-    # 放宽模式：市场平静 / 熊市时放松机构级门槛，让用户至少看到候选。
-    elif relaxed:
-        dist_min, dist_max, buy_dist_max = 1.0, 30.0, 25.0
-        ann_min_sp, ann_min_sc, ann_max = 3, 1.5, 120
-        std_min, roc_max = 0.7, 60
-        delta_min, delta_max, delta_buy_min = 0.05, 0.50, 0.20
-        pop_min, vol_min, oi_min = 55, 3, 10
-    else:
-        dist_min, dist_max, buy_dist_max = 2.0, 20.0, 15.0
-        ann_min_sp, ann_min_sc, ann_max = 8, 3, 80
-        std_min, roc_max = 1.0, 40
-        delta_min, delta_max, delta_buy_min = 0.10, 0.40, 0.30
-        pop_min, vol_min, oi_min = 70, 3, 10
+    th = FILTER_PROFILES["best_effort" if best_effort else "relaxed" if relaxed else "strict"]
 
     strike = float(row["strike"])
     last_price = float(row["lastPrice"]) if not pd.isna(row["lastPrice"]) else 0.0
@@ -438,7 +468,7 @@ def _process_row(
     if iv < 0.005 or not quotes_live:
         iv = hist_vol
 
-    if volume < vol_min or oi < oi_min:
+    if volume < th.vol_min or oi < th.oi_min:
         return None
 
     bid_ask_spread = round(ask - bid, 2)
@@ -482,14 +512,14 @@ def _process_row(
 
     # 距离过滤（避免深 OTM 垃圾期权）
     if strategy in ("sell_put", "sell_call"):
-        if not (dist_min <= distance_pct <= dist_max):
+        if not (th.dist_min <= distance_pct <= th.dist_max):
             return None
-        if strategy == "sell_put" and (annualized_return < ann_min_sp or annualized_return > ann_max):
+        if strategy == "sell_put" and (annualized_return < th.ann_min_sp or annualized_return > th.ann_max):
             return None
-        if strategy == "sell_call" and (annualized_return < ann_min_sc or annualized_return > ann_max):
+        if strategy == "sell_call" and (annualized_return < th.ann_min_sc or annualized_return > th.ann_max):
             return None
     else:
-        if distance_pct > buy_dist_max:  # 买方不要太深 OTM
+        if distance_pct > th.buy_dist_max:  # 买方不要太深 OTM
             return None
 
     if strategy == "buy_call" and current_price < sma50 and not best_effort:
@@ -498,7 +528,7 @@ def _process_row(
     # ── 机构标准：σ-标准化距离（1.2σ 为甜点，≥ 1.0σ 为最低准入）──
     exp_move_pct_raw = iv * math.sqrt(dte / 365) * 100
     std_distance = round(distance_pct / exp_move_pct_raw, 2) if exp_move_pct_raw > 0 else None
-    if strategy in ("sell_put", "sell_call") and std_distance is not None and std_distance < std_min:
+    if strategy in ("sell_put", "sell_call") and std_distance is not None and std_distance < th.std_min:
         return None
 
     # ── 机构标准：ROC（权利金/最大亏损 年化）──
@@ -508,7 +538,7 @@ def _process_row(
         roc = round(premium / strike * (365 / dte) * 100, 1)
     else:
         roc = None
-    if strategy in ("sell_put", "sell_call") and roc is not None and roc > roc_max:
+    if strategy in ("sell_put", "sell_call") and roc is not None and roc > th.roc_max:
         return None
 
     # IV 溢价（IV 相对历史波动率的超额；正值对卖方有利）
@@ -524,21 +554,21 @@ def _process_row(
         d_abs = abs(greeks["delta"])
         if strategy in ("sell_put", "sell_call"):
             # 卖方甜点：Delta 0.10-0.40（太低=深OTM低回报，太高=高风险）
-            if not (delta_min <= d_abs <= delta_max):
+            if not (th.delta_min <= d_abs <= th.delta_max):
                 return None
         elif strategy == "buy_call":
             # 买方需要足够方向性敞口
-            if d_abs < delta_buy_min:
+            if d_abs < th.delta_buy_min:
                 return None
         elif strategy == "buy_put":
-            if d_abs < delta_buy_min:
+            if d_abs < th.delta_buy_min:
                 return None
 
     # ── 四种策略的经验胜率 ──
     if strategy == "sell_put":
         win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
         pop_empirical = round(win_rate * 100, 1)
-        if pop_empirical < pop_min:
+        if pop_empirical < th.pop_min:
             return None
     elif strategy == "buy_put":
         pop_empirical = _empirical_win_put_buy(down_windows, distance_pct)
