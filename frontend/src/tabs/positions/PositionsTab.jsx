@@ -341,7 +341,7 @@ function CloseDialog({ pos, onClose, onConfirm }) {
 
 // ── 持仓卡片 ─────────────────────────────────────────────────────────────────
 
-function PositionCard({ pos, pnl, onDelete, onClose }) {
+function PositionCard({ pos, pnl, earningsDate, onDelete, onClose }) {
   const isSell = SELL_STRATEGIES.has(pos.strategy);
   const maxProfit = (pos.premium * pos.quantity * 100).toFixed(2);
   const maxLoss = isSell
@@ -355,8 +355,27 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
   const show50Alert  = isSell && pnl?.profitProgress >= 50;
   const showRollAlert = isSell && pnl?.profitProgress != null && pnl.profitProgress <= -100;
 
+  const isItm = isSell && pnl?.currentPrice != null && (
+    pos.strategy === 'sell_put' ? pnl.currentPrice < pos.strike : pnl.currentPrice > pos.strike
+  );
+  const earningsBeforeExpiry = earningsDate
+    && earningsDate >= today()
+    && earningsDate <= pos.expiration_date;
+
   return (
     <div className="glass-panel" style={{ padding: '1rem 1.25rem', position: 'relative' }}>
+      {/* ITM 被行权风险横幅 */}
+      {isItm && (
+        <div style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: '8px', padding: '0.4rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#fca5a5' }}>
+          🔔 已进入实值（现价 ${pnl.currentPrice} {pos.strategy === 'sell_put' ? '<' : '>'} 行权价 ${pos.strike.toFixed(2)}），临近到期有被行权风险
+        </div>
+      )}
+      {/* 财报在到期日前横幅 */}
+      {earningsBeforeExpiry && (
+        <div style={{ background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: '8px', padding: '0.4rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#60a5fa' }}>
+          📅 财报日 {earningsDate} 在到期日之前，留意财报波动对仓位的冲击
+        </div>
+      )}
       {/* 50% 利润提醒横幅 */}
       {show50Alert && (
         <div style={{ background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '8px', padding: '0.4rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -616,6 +635,7 @@ export default function PositionsTab() {
   const [pnlLoading, setPnlLoading] = useState(false);
   const [closingPos, setClosingPos] = useState(null);
   const [stocks, setStocks] = useState([]);
+  const [earningsMap, setEarningsMap] = useState({});
   const [importing, setImporting] = useState(false);
   const pnlTimerRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -638,6 +658,15 @@ export default function PositionsTab() {
       setStocks(res.data || []);
     } catch {
       // 正股加载失败不阻断主界面
+    }
+  };
+
+  const loadEarningsAlerts = async () => {
+    try {
+      const res = await apiFetch('GET', '/api/positions/earnings-alerts');
+      setEarningsMap(res.data || {});
+    } catch {
+      // 财报提醒加载失败不阻断主界面
     }
   };
 
@@ -691,6 +720,7 @@ export default function PositionsTab() {
   useEffect(() => {
     load();
     loadStocks();
+    loadEarningsAlerts();
   }, []);
 
   useEffect(() => {
@@ -882,6 +912,7 @@ export default function PositionsTab() {
                     key={pos.id}
                     pos={pos}
                     pnl={pnlMap[pos.id]}
+                    earningsDate={earningsMap[pos.symbol]}
                     onDelete={handleDelete}
                     onClose={setClosingPos}
                   />

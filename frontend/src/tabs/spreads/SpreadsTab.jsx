@@ -43,6 +43,52 @@ function LegBadge({ leg }) {
   );
 }
 
+const today = () => new Date().toISOString().slice(0, 10);
+
+function legToPosition(leg, s) {
+  return {
+    symbol: s.symbol,
+    strategy: `${leg.action}_${leg.type}`,       // buy/sell × call/put
+    strike: leg.strike,
+    premium: leg.premium,
+    quantity: leg.quantity || 1,
+    expiration_date: s.expiration,
+    open_date: today(),
+    notes: `价差腿：${s.strategy} ${s.legs.map(l => `${l.action === 'buy' ? '买' : '卖'}${l.type === 'put' ? 'P' : 'C'}${l.strike}`).join('/')}`,
+  };
+}
+
+function AddToPositionsButton({ s }) {
+  const [state, setState] = useState('idle');   // idle | saving | done | error
+
+  const add = async (e) => {
+    e.stopPropagation();
+    if (state === 'saving' || state === 'done') return;
+    setState('saving');
+    try {
+      for (const leg of s.legs) {
+        await apiFetch('POST', '/api/positions', legToPosition(leg, s));
+      }
+      setState('done');
+    } catch {
+      setState('error');
+    }
+  };
+
+  const label = { idle: '+ 加入持仓', saving: '保存中…', done: '✓ 已加入', error: '失败，重试' }[state];
+  const color = state === 'done' ? '#10b981' : state === 'error' ? '#ef4444' : '#60a5fa';
+  return (
+    <button onClick={add} disabled={state === 'saving' || state === 'done'}
+      style={{
+        background: 'rgba(96,165,250,0.1)', border: `1px solid ${color}55`, color,
+        padding: '0.3rem 0.6rem', borderRadius: 6, cursor: state === 'done' ? 'default' : 'pointer',
+        fontSize: '0.74rem', fontWeight: 600, whiteSpace: 'nowrap',
+      }}>
+      {label}
+    </button>
+  );
+}
+
 function SpreadCard({ s }) {
   const [open, setOpen] = useState(false);
   const [payoff, setPayoff] = useState(null);
@@ -77,6 +123,7 @@ function SpreadCard({ s }) {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+          {s.legs?.length > 0 && <AddToPositionsButton s={s} />}
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: '0.66rem', color: 'var(--text-secondary)' }}>评分</div>
             <div style={{ fontSize: '1.05rem', fontWeight: 800, color: scoreColor }}>{(s.score * 100).toFixed(0)}</div>

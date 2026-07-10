@@ -286,6 +286,41 @@ def delete_stock(stock_id: int):
     return {"ok": True}
 
 
+# ── 财报提醒 ─────────────────────────────────────────────────────────────────
+
+@router.get("/api/positions/earnings-alerts")
+def positions_earnings_alerts():
+    """持仓标的的下次财报日（{symbol: date}），用于标记财报落在到期日前的仓位。"""
+    from routers.earnings import _fetch_fmp_earnings, _get_next_earnings_yf
+    from services import cache as cache_svc
+    from services.scanner import ETFS
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM positions WHERE status='open' OR status IS NULL"
+        ).fetchall()
+    symbols = sorted({r[0] for r in rows} - ETFS)
+    if not symbols:
+        return {"data": {}}
+
+    cache_key = f"pos-earnings:{','.join(symbols)}"
+    cached = cache_svc.get(cache_key, ttl_seconds=7200)
+    if cached is not None:
+        return {"data": cached, "cached": True}
+
+    fmp_map = _fetch_fmp_earnings()
+    result: dict[str, str] = {}
+    for sym in symbols:
+        if sym in fmp_map:
+            result[sym] = fmp_map[sym]
+            continue
+        dt = _get_next_earnings_yf(yf.Ticker(sym))
+        if dt:
+            result[sym] = dt.strftime("%Y-%m-%d")
+    cache_svc.set(cache_key, result)
+    return {"data": result, "cached": False}
+
+
 # ── 实时 PnL ─────────────────────────────────────────────────────────────────
 
 @router.get("/api/portfolio/pnl")
