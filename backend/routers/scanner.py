@@ -173,9 +173,11 @@ def analyze_option(
         raise HTTPException(status_code=404, detail="找不到历史数据，请稍后重试")
 
     # ── 历史回测 ──
-    win_rate, total, safe, triggered = _calc_empirical_win_rate(
-        history, dte, current_price, strike
-    )
+    win_stats = _calc_empirical_win_rate(history, dte, current_price, strike)
+    win_rate = win_stats["win_rate"]
+    total = win_stats["total_windows"]
+    safe = win_stats["safe_windows"]
+    triggered = win_stats["triggered_events"]
 
     # ── 价格图表 ──
     chart_data = [

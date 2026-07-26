@@ -222,15 +222,30 @@ def _precompute_up_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
     return windows
 
 
+def _independent_sample_count(windows: list[tuple], trading_dte: int) -> int:
+    """按 trading_dte 步长跳跃取样，返回互不重叠窗口数（用于暴露真实统计独立性）。"""
+    if not windows:
+        return 0
+    step = max(1, trading_dte)
+    return len(windows[::step])
+
+
 def _calc_empirical_win_rate(history_df: pd.DataFrame, dte: int, current_price: float, strike: float,
-                              _windows: list[tuple] | None = None):
-    """sell_put 经验胜率：股价从未跌破行权价的窗口比例。"""
+                              _windows: list[tuple] | None = None) -> dict:
+    """sell_put 经验胜率：股价从未跌破行权价的窗口比例。
+
+    返回 dict：win_rate（重叠窗口胜率）、total_windows（重叠窗口总数）、
+    safe_windows、independent_windows（按 DTE 步长跳跃取样的独立样本数，
+    用于让调用方判断胜率的统计可信度）、triggered_events。
+    """
+    empty_result = {"win_rate": 1.0, "total_windows": 0, "safe_windows": 0,
+                     "independent_windows": 0, "triggered_events": []}
     if history_df.empty or current_price <= 0:
-        return 1.0, 0, 0, []
+        return empty_result
 
     required_drop_pct = (current_price - strike) / current_price
     if required_drop_pct <= 0:
-        return 0.0, 0, 0, []
+        return {**empty_result, "win_rate": 0.0}
 
     if _windows is None:
         _windows = _precompute_windows(history_df, dte)
@@ -261,9 +276,15 @@ def _calc_empirical_win_rate(history_df: pd.DataFrame, dte: int, current_price: 
                     last["drawdown_pct"] = round(drop_pct * 100, 2)
 
     if total_windows == 0:
-        return 1.0, 0, 0, []
+        return empty_result
 
-    return safe_windows / total_windows, total_windows, safe_windows, triggered_events
+    return {
+        "win_rate": safe_windows / total_windows,
+        "total_windows": total_windows,
+        "safe_windows": safe_windows,
+        "independent_windows": _independent_sample_count(_windows, trading_dte),
+        "triggered_events": triggered_events,
+    }
 
 
 def _empirical_win_call(up_windows: list[tuple], distance_pct: float) -> float | None:
@@ -565,9 +586,13 @@ def _process_row(
                 return None
 
     # ── 四种策略的经验胜率 ──
+    pop_sample_size = None
+    pop_independent_sample_size = None
     if strategy == "sell_put":
-        win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
-        pop_empirical = round(win_rate * 100, 1)
+        win_stats = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
+        pop_empirical = round(win_stats["win_rate"] * 100, 1)
+        pop_sample_size = win_stats["total_windows"]
+        pop_independent_sample_size = win_stats["independent_windows"]
         if pop_empirical < th.pop_min:
             return None
     elif strategy == "buy_put":
@@ -635,6 +660,8 @@ def _process_row(
         "bidAskSpreadPct": bid_ask_spread_pct,
         "popTheoretical": greeks["pop"] if greeks else None,
         "popEmpirical": pop_empirical,
+        "popEmpiricalSampleSize": pop_sample_size,
+        "popEmpiricalIndependentSampleSize": pop_independent_sample_size,
         "p50": p50,
         "volume": volume,
         "openInterest": oi,

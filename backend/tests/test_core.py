@@ -57,17 +57,32 @@ def _flat_history(price: float, n: int = 60) -> pd.DataFrame:
 
 def test_win_rate_flat_history_never_breaches():
     # 价格恒定 100，行权价 90：从不跌破 → 胜率 100%
-    win, total, safe, _ = _calc_empirical_win_rate(_flat_history(100), 30, 100, 90)
-    assert win == 1.0
-    assert total > 0 and safe == total
+    stats = _calc_empirical_win_rate(_flat_history(100), 30, 100, 90)
+    assert stats["win_rate"] == 1.0
+    assert stats["total_windows"] > 0 and stats["safe_windows"] == stats["total_windows"]
 
 
 def test_win_rate_strike_above_price_is_zero():
     # 行权价 110 高于现价 100：required_drop <= 0 → 0%
-    win, total, safe, _ = _calc_empirical_win_rate(_flat_history(100), 30, 100, 110)
-    assert win == 0.0
+    stats = _calc_empirical_win_rate(_flat_history(100), 30, 100, 110)
+    assert stats["win_rate"] == 0.0
 
 
 def test_win_rate_empty_history():
-    win, total, safe, _ = _calc_empirical_win_rate(pd.DataFrame(), 30, 100, 90)
-    assert win == 1.0 and total == 0
+    stats = _calc_empirical_win_rate(pd.DataFrame(), 30, 100, 90)
+    assert stats["win_rate"] == 1.0 and stats["total_windows"] == 0
+
+
+def test_win_rate_reports_independent_sample_smaller_than_total():
+    stats = _calc_empirical_win_rate(_flat_history(100), 30, 100, 90)
+    # 30 日 DTE ≈ 20 个交易日步长，重叠窗口数应明显多于独立窗口数
+    assert stats["independent_windows"] < stats["total_windows"]
+    assert stats["independent_windows"] > 0
+
+
+def test_independent_sample_count_matches_stride():
+    from services.scanner import _independent_sample_count
+    windows = [(None, 0, 0, 0)] * 100
+    assert _independent_sample_count(windows, trading_dte=10) == 10
+    assert _independent_sample_count([], trading_dte=10) == 0
+    assert _independent_sample_count(windows, trading_dte=1) == 100
