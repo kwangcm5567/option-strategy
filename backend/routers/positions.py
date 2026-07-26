@@ -224,6 +224,7 @@ def import_tiger(body: ImportIn):
     parsed = tiger_import.parse(body.content)
     opt_added = 0
     stock_added = 0
+    snapshot_saved = False
 
     with get_conn() as conn:
         for o in parsed["options"]:
@@ -253,9 +254,23 @@ def import_tiger(body: ImportIn):
                 (s["symbol"], s["quantity"], s["avg_price"], s["notes"]),
             )
             stock_added += 1
+        snap = parsed.get("account_snapshot")
+        if snap:
+            conn.execute(
+                """
+                INSERT INTO account_snapshots
+                    (net_asset_value, total_market_value, total_margin_requirement,
+                     implied_margin_loan, leverage)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (snap["net_asset_value"], snap["total_market_value"],
+                 snap["total_margin_requirement"], snap["implied_margin_loan"],
+                 snap["leverage"]),
+            )
+            snapshot_saved = True
         conn.commit()
 
-    return {"options_imported": opt_added, "stocks_imported": stock_added, "skipped": parsed["skipped"]}
+    return {"options_imported": opt_added, "stocks_imported": stock_added, "skipped": parsed["skipped"], "account_snapshot_saved": snapshot_saved}
 
 
 @router.get("/api/stocks")
