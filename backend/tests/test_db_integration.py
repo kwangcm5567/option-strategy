@@ -35,3 +35,20 @@ def test_import_tiger_persists_account_snapshot(tmp_path, monkeypatch):
         row = conn.execute("SELECT * FROM account_snapshots").fetchone()
     assert row is not None
     assert row["net_asset_value"] > 0
+
+
+def test_fingerprint_changes_when_stock_added(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "test3.db")
+    database.init_db()
+
+    from routers.risk import _positions_fingerprint
+
+    fp1 = _positions_fingerprint()
+    with database.get_conn() as conn:
+        conn.execute(
+            "INSERT INTO stock_holdings (symbol, quantity, avg_price) VALUES ('QQQ', 10, 600.0)"
+        )
+        conn.commit()
+    fp2 = _positions_fingerprint()
+
+    assert fp1 != fp2

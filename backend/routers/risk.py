@@ -14,13 +14,23 @@ router = APIRouter()
 
 def _positions_fingerprint() -> str:
     with get_conn() as conn:
-        row = conn.execute(
+        pos_row = conn.execute(
             """
             SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(SUM(strike * quantity + premium), 0)
             FROM positions WHERE status='open' OR status IS NULL
             """
         ).fetchone()
-    return f"{row[0]}:{row[1]}:{round(row[2], 4)}"
+        stock_row = conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(SUM(quantity * avg_price), 0)
+            FROM stock_holdings
+            """
+        ).fetchone()
+        snap_row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM account_snapshots").fetchone()
+    return (
+        f"{pos_row[0]}:{pos_row[1]}:{round(pos_row[2], 4)}:"
+        f"{stock_row[0]}:{stock_row[1]}:{round(stock_row[2], 4)}:{snap_row[0]}"
+    )
 
 
 @router.get("/api/portfolio/risk")
