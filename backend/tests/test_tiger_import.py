@@ -38,3 +38,22 @@ def test_parse_includes_account_snapshot():
     assert len(result["stocks"]) == 2
     assert result["account_snapshot"] is not None
     assert result["account_snapshot"]["net_asset_value"] > 0
+
+
+def test_compute_account_snapshot_includes_negative_market_value_rows():
+    import csv
+    import io
+
+    csv_text = (
+        "Symbol,Instrument,Option Style,Expiry,Strike,Holdings,Avg Price,"
+        "Market Value,Position Percentage,Margin Amount\n"
+        '="AMD",Stock,,,,14,203.15,7301.15,7.28%,1825.29\n'
+        '="XYZ",Option,PUT,01/01/2027,50,-1,2.00,-200.00,-0.2%,1000.00\n'
+    )
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    snap = compute_account_snapshot(rows)
+
+    assert snap is not None
+    # 空头行贡献负的 market value，不应被整行剔除
+    assert snap["total_market_value"] == round(7301.15 + (-200.00), 2)
+    assert snap["total_margin_requirement"] == round(1825.29 + 1000.00, 2)

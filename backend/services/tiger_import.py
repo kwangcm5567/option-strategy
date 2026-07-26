@@ -53,7 +53,7 @@ def compute_account_snapshot(rows: list[dict]) -> dict | None:
         mv = _to_float(mv_raw)
         pct = _to_float(pct_raw.replace("%", ""))
         margin = _to_float(margin_raw)
-        if mv <= 0 or pct <= 0:
+        if mv == 0 or pct == 0:
             continue
         implied_navs.append(mv / (pct / 100))
         total_mv += mv
@@ -86,7 +86,7 @@ def _strategy(option_style: str, holdings: int) -> str | None:
 
 
 def parse(content: str) -> dict:
-    """返回 {options: [...], stocks: [...], skipped: int}。"""
+    """返回 {options: [...], stocks: [...], skipped: int, account_snapshot: dict | None}。"""
     options: list[dict] = []
     stocks: list[dict] = []
     skipped = 0
