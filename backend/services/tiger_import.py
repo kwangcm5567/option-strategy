@@ -36,6 +36,46 @@ def _to_float(raw: str) -> float:
         return 0.0
 
 
+def compute_account_snapshot(rows: list[dict]) -> dict | None:
+    """从老虎 CSV 原始行反推账户级快照：用各行 Market Value / Position Percentage
+    反推 NAV 取中位数（抗单行四舍五入噪音），Margin Amount 求和得总保证金要求。
+    缺列或没有可用行时返回 None，调用方据此跳过快照写入，不影响其余导入流程。"""
+    implied_navs: list[float] = []
+    total_mv = 0.0
+    total_margin = 0.0
+
+    for row in rows:
+        mv_raw = row.get("Market Value", "")
+        pct_raw = row.get("Position Percentage", "")
+        margin_raw = row.get("Margin Amount", "")
+        if not mv_raw or not pct_raw or not margin_raw:
+            continue
+        mv = _to_float(mv_raw)
+        pct = _to_float(pct_raw.replace("%", ""))
+        margin = _to_float(margin_raw)
+        if mv <= 0 or pct <= 0:
+            continue
+        implied_navs.append(mv / (pct / 100))
+        total_mv += mv
+        total_margin += margin
+
+    if not implied_navs:
+        return None
+
+    implied_navs.sort()
+    n = len(implied_navs)
+    mid = n // 2
+    nav = implied_navs[mid] if n % 2 == 1 else (implied_navs[mid - 1] + implied_navs[mid]) / 2
+
+    return {
+        "net_asset_value": round(nav, 2),
+        "total_market_value": round(total_mv, 2),
+        "total_margin_requirement": round(total_margin, 2),
+        "implied_margin_loan": round(total_mv - nav, 2),
+        "leverage": round(total_mv / nav, 4) if nav > 0 else None,
+    }
+
+
 def _strategy(option_style: str, holdings: int) -> str | None:
     side = option_style.strip().upper()
     if side == "PUT":
@@ -89,4 +129,5 @@ def parse(content: str) -> dict:
         else:
             skipped += 1
 
-    return {"options": options, "stocks": stocks, "skipped": skipped}
+    snapshot = compute_account_snapshot(list(csv.DictReader(io.StringIO(content))))
+    return {"options": options, "stocks": stocks, "skipped": skipped, "account_snapshot": snapshot}
