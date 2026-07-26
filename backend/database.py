@@ -49,6 +49,17 @@ def init_db():
                 created_at  TEXT    DEFAULT (datetime('now'))
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS account_snapshots (
+                id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+                imported_at               TEXT    NOT NULL DEFAULT (datetime('now')),
+                net_asset_value           REAL    NOT NULL,
+                total_market_value        REAL    NOT NULL,
+                total_margin_requirement  REAL    NOT NULL,
+                implied_margin_loan       REAL    NOT NULL,
+                leverage                  REAL
+            )
+        """)
         # 为旧表补齐新列（迁移兼容）
         existing = {row[1] for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
         for col, definition in [
