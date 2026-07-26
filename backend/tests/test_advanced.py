@@ -6,7 +6,10 @@ import pandas as pd
 from services.payoff import compute, scenario_grid, _bs_price
 from services.scanner import FILTER_PROFILES
 from services.spreads import _clean, _vertical, _iron_condor, _straddle_strangle, _score_spread
-from services.risk import _beta, _correlation_matrix, _historical_var, _stress_test, _reval_price
+from services.risk import (
+    _beta, _correlation_matrix, _historical_var, _stress_test, _reval_price,
+    _stock_exposure, _margin_buffer,
+)
 
 
 # ═══ payoff ═══════════════════════════════════════════════════════════════════
@@ -164,6 +167,25 @@ def test_correlation_matrix():
     assert _correlation_matrix({"A": a}) == {"symbols": [], "matrix": []}
 
 
+def test_stock_exposure_adds_delta_and_sector():
+    holdings = [{"symbol": "QQQ", "quantity": 402}]
+    price_map = {"QQQ": 683.90}
+    beta_map = {"QQQ": 1.0}
+    exp = _stock_exposure(holdings, price_map, beta_map, spy_price=650.0)
+
+    assert exp["totalDelta"] == 402
+    assert exp["bySector"]["指数ETF"] == 402 * 683.90
+    assert exp["bySymbolExposure"]["QQQ"] == 402 * 683.90
+    assert exp["details"][0]["symbol"] == "QQQ"
+
+
+def test_stock_exposure_skips_missing_price():
+    holdings = [{"symbol": "ZZZ", "quantity": 10}]
+    exp = _stock_exposure(holdings, {}, {}, spy_price=500.0)
+    assert exp["totalDelta"] == 0.0
+    assert exp["bySector"] == {}
+
+
 def _open_position(symbol: str = "AAPL", strategy: str = "sell_put",
                    strike: float = 95.0, quantity: int = 1) -> dict:
     exp = (datetime.now().date() + timedelta(days=30)).isoformat()
@@ -185,6 +207,18 @@ def test_historical_var_no_data():
     assert var["oneDayVar95"] is None
 
 
+def test_historical_var_includes_stock_holdings():
+    ret_map = {"QQQ": _ret_series([0.01, -0.03, 0.02, -0.015, 0.025] * 60)}
+    var_with_stock = _historical_var(
+        [], {"QQQ": 100.0}, ret_map, datetime.now().date(),
+        stock_holdings=[{"symbol": "QQQ", "quantity": 10}],
+    )
+    var_without = _historical_var([], {"QQQ": 100.0}, ret_map, datetime.now().date())
+
+    assert var_with_stock["oneDayVar95"] is not None
+    assert var_without["oneDayVar95"] is None  # 没有期权也没传正股参数 → 无敞口
+
+
 def test_stress_test_sell_put_loses_in_crash():
     pos = [_open_position(strategy="sell_put", strike=95)]
     ret_map = {"AAPL": _ret_series([0.01, -0.02, 0.015, -0.005, 0.02] * 8)}
@@ -192,6 +226,43 @@ def test_stress_test_sell_put_loses_in_crash():
     by_name = {o["scenario"]: o["pnl"] for o in out}
     assert by_name["2008金融危机"] < 0     # 卖 put 在暴跌中亏损
     assert by_name["强势上涨+10%"] > 0     # 上涨 + IV 回落 → 盈利
+
+
+def test_stress_test_includes_stock_holdings_linear_pnl():
+    out = _stress_test(
+        [], {"QQQ": 100.0}, {}, datetime.now().date(),
+        stock_holdings=[{"symbol": "QQQ", "quantity": 10}],
+    )
+    by_name = {o["scenario"]: o["pnl"] for o in out}
+    assert by_name["2008金融危机"] == round(10 * 100.0 * -0.40, 2)
+    assert by_name["强势上涨+10%"] == round(10 * 100.0 * 0.10, 2)
+
+
+def test_margin_buffer_computes_pct_to_call():
+    snapshot = {
+        "net_asset_value": 100000.0,
+        "total_market_value": 300000.0,
+        "total_margin_requirement": 60000.0,
+        "imported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    result = _margin_buffer(snapshot)
+    assert result["excessLiquidityEstimate"] == 40000.0
+    assert result["stale"] is False
+    # avg_margin_rate = 60000/300000 = 0.2 → buffer_pct = 40000/(300000*0.8)*100 ≈ 16.7
+    assert abs(result["bufferPctToMarginCall"] - 16.7) < 0.5
+
+
+def test_margin_buffer_none_when_no_snapshot():
+    assert _margin_buffer(None) is None
+
+
+def test_margin_buffer_flags_stale_after_24h():
+    old = (datetime.now() - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
+    snapshot = {
+        "net_asset_value": 100.0, "total_market_value": 100.0,
+        "total_margin_requirement": 10.0, "imported_at": old,
+    }
+    assert _margin_buffer(snapshot)["stale"] is True
 
 
 # ═══ scanner 过滤档位 ══════════════════════════════════════════════════════════
