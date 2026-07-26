@@ -170,7 +170,7 @@ function LiquidityBar({ score }) {
 }
 
 // ─── PoP 双显示 ───────────────────────────────────────────────────────────────
-function PoPBar({ theoretical, empirical }) {
+function PoPBar({ theoretical, empirical, sampleSize, independentSampleSize }) {
   const agreement = theoretical != null && empirical != null && Math.abs(theoretical - empirical) <= 10;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -194,6 +194,17 @@ function PoPBar({ theoretical, empirical }) {
           <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${Math.min(empirical, 100)}%`, background: empirical >= 70 ? '#10b981' : '#f59e0b', borderRadius: '2px' }} />
           </div>
+          {empirical != null && sampleSize != null && (
+            <p style={{
+              fontSize: '0.68rem', marginTop: '2px',
+              color: independentSampleSize != null && independentSampleSize < 5
+                ? '#f59e0b' : 'var(--text-secondary)',
+            }}>
+              基于 {sampleSize} 个历史窗口
+              {independentSampleSize != null && `（约 ${independentSampleSize} 个独立样本）`}
+              {independentSampleSize != null && independentSampleSize < 5 && ' ⚠️ 样本量小，仅供参考'}
+            </p>
+          )}
         </div>
       )}
       {agreement && <p style={{ fontSize: '0.72rem', color: '#10b981' }}>✅ 理论与历史吻合，信号较可靠</p>}
@@ -638,7 +649,12 @@ export default function OptionCard({ option, onClick, onQuickAdd, accountSize = 
 
       {/* ── PoP ── */}
       <div style={{ marginBottom: '0.75rem' }}>
-        <PoPBar theoretical={option.popTheoretical} empirical={option.popEmpirical} />
+        <PoPBar
+          theoretical={option.popTheoretical}
+          empirical={option.popEmpirical}
+          sampleSize={option.popEmpiricalSampleSize}
+          independentSampleSize={option.popEmpiricalIndependentSampleSize}
+        />
       </div>
 
       {/* ── AI 建议 ── */}
