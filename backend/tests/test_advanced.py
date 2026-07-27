@@ -239,11 +239,12 @@ def test_stress_test_includes_stock_holdings_linear_pnl():
 
 
 def test_margin_buffer_computes_pct_to_call():
+    # imported_at 模拟 SQLite `datetime('now')` 写入的 UTC 时间戳
     snapshot = {
         "net_asset_value": 100000.0,
         "total_market_value": 300000.0,
         "total_margin_requirement": 60000.0,
-        "imported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "imported_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
     }
     result = _margin_buffer(snapshot)
     assert result["excessLiquidityEstimate"] == 40000.0
@@ -257,12 +258,23 @@ def test_margin_buffer_none_when_no_snapshot():
 
 
 def test_margin_buffer_flags_stale_after_24h():
-    old = (datetime.now() - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
+    old = (datetime.utcnow() - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
     snapshot = {
         "net_asset_value": 100.0, "total_market_value": 100.0,
         "total_margin_requirement": 10.0, "imported_at": old,
     }
     assert _margin_buffer(snapshot)["stale"] is True
+
+
+def test_margin_buffer_not_stale_for_recent_utc_snapshot():
+    # 快照存的是 UTC（SQLite datetime('now')），20 小时前不该被判定过期；
+    # 若拿本地时间跟 UTC 时间戳比较，在本地时区早于 UTC 的机器上会被误判为过期。
+    recent = (datetime.utcnow() - timedelta(hours=20)).strftime("%Y-%m-%d %H:%M:%S")
+    snapshot = {
+        "net_asset_value": 100.0, "total_market_value": 100.0,
+        "total_margin_requirement": 10.0, "imported_at": recent,
+    }
+    assert _margin_buffer(snapshot)["stale"] is False
 
 
 # ═══ scanner 过滤档位 ══════════════════════════════════════════════════════════

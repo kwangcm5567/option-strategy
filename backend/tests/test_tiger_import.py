@@ -57,3 +57,23 @@ def test_compute_account_snapshot_includes_negative_market_value_rows():
     # 空头行贡献负的 market value，不应被整行剔除
     assert snap["total_market_value"] == round(7301.15 + (-200.00), 2)
     assert snap["total_margin_requirement"] == round(1825.29 + 1000.00, 2)
+
+
+def test_compute_account_snapshot_excludes_negative_implied_nav_row():
+    import csv
+    import io
+
+    csv_text = (
+        "Symbol,Instrument,Option Style,Expiry,Strike,Holdings,Avg Price,"
+        "Market Value,Position Percentage,Margin Amount\n"
+        '="AMD",Stock,,,,14,203.15,7301.15,7.28%,1825.29\n'
+        '="BAD",Stock,,,,1,10.00,500.00,-0.5%,100.00\n'
+    )
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    snap = compute_account_snapshot(rows)
+
+    assert snap is not None
+    # mv/pct 符号不一致（隐含 NAV 为负）的坏行应整行剔除，不进中位数也不进汇总
+    assert snap["net_asset_value"] == round(7301.15 / 0.0728, 2)
+    assert snap["total_market_value"] == 7301.15
+    assert snap["total_margin_requirement"] == 1825.29

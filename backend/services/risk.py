@@ -348,7 +348,7 @@ def _margin_buffer(snapshot: dict | None) -> dict | None:
         buffer_pct = round(excess / (total_mv * (1 - avg_margin_rate)) * 100, 1)
 
     imported_at = datetime.strptime(snapshot["imported_at"], "%Y-%m-%d %H:%M:%S")
-    stale = (datetime.now() - imported_at).total_seconds() > 24 * 3600
+    stale = (datetime.utcnow() - imported_at).total_seconds() > 24 * 3600
 
     return {
         "netAssetValue": round(nav, 2),

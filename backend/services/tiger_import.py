@@ -55,7 +55,10 @@ def compute_account_snapshot(rows: list[dict]) -> dict | None:
         margin = _to_float(margin_raw)
         if mv == 0 or pct == 0:
             continue
-        implied_navs.append(mv / (pct / 100))
+        implied_nav = mv / (pct / 100)
+        if implied_nav <= 0:
+            continue
+        implied_navs.append(implied_nav)
         total_mv += mv
         total_margin += margin
 
