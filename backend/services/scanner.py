@@ -124,26 +124,38 @@ def _fetch_earnings_map() -> dict[str, int]:
     for sym in [s for s in TICKERS if s not in result and s not in ETFS]:
         try:
             cal = yf.Ticker(sym).calendar
-            dt = None
-            if isinstance(cal, dict):
-                dates = cal.get("Earnings Date") or cal.get("earningsDate") or []
-                if dates:
-                    d = dates[0]
-                    if isinstance(d, str):
-                        dt = datetime.strptime(d[:10], "%Y-%m-%d")
-                    elif hasattr(d, "tzinfo"):
-                        dt = d.replace(tzinfo=None)
-                    else:
-                        dt = d
-            elif hasattr(cal, "iloc") and "Earnings Date" in cal.index:
-                d = cal.loc["Earnings Date"].iloc[0]
-                dt = d.replace(tzinfo=None) if hasattr(d, "tzinfo") else d
-            if dt is not None:
-                result[sym] = (dt - today).days
+            days = _earnings_days_from_calendar(cal, today)
+            if days is not None:
+                result[sym] = days
         except Exception:
             pass
 
     return result
+
+
+def _earnings_days_from_calendar(cal, today: datetime) -> int | None:
+    """从 yfinance Ticker.calendar 返回值中解析下一次财报日期，返回距今天数。
+    yfinance 返回的日期是 date 对象（无 tzinfo），跟 datetime 类型的 today 直接相减
+    会因类型不匹配抛 TypeError；这里统一转成 date 再相减。"""
+    dt = None
+    if isinstance(cal, dict):
+        dates = cal.get("Earnings Date") or cal.get("earningsDate") or []
+        if dates:
+            d = dates[0]
+            if isinstance(d, str):
+                dt = datetime.strptime(d[:10], "%Y-%m-%d")
+            elif hasattr(d, "tzinfo"):
+                dt = d.replace(tzinfo=None)
+            else:
+                dt = d
+    elif hasattr(cal, "iloc") and "Earnings Date" in cal.index:
+        d = cal.loc["Earnings Date"].iloc[0]
+        dt = d.replace(tzinfo=None) if hasattr(d, "tzinfo") else d
+
+    if dt is None:
+        return None
+    dt_date = dt.date() if isinstance(dt, datetime) else dt
+    return (dt_date - today.date()).days
 
 
 # ─── 批量拉取除息日（FMP 优先）────────────────────────────────────────────

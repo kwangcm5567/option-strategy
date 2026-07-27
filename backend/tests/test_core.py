@@ -1,9 +1,11 @@
 """核心纯函数单测：评分/筛选/胜率/Greeks/CBOE 解析。无网络依赖。"""
+from datetime import date, datetime
+
 import pandas as pd
 
 from services.cboe import _parse_osi
 from services.greeks import calc_black_scholes, calc_p50
-from services.scanner import _liquidity_score, _calc_empirical_win_rate
+from services.scanner import _liquidity_score, _calc_empirical_win_rate, _earnings_days_from_calendar
 
 
 # ── CBOE OSI 期权代码解析 ──
@@ -86,3 +88,31 @@ def test_independent_sample_count_matches_stride():
     assert _independent_sample_count(windows, trading_dte=10) == 10
     assert _independent_sample_count([], trading_dte=10) == 0
     assert _independent_sample_count(windows, trading_dte=1) == 100
+
+
+# ── 财报日期解析（yfinance .calendar 返回 date 对象，不能直接跟 datetime 相减）──
+
+def test_earnings_days_from_calendar_handles_plain_date():
+    today = datetime(2026, 7, 27)
+    cal = {"Earnings Date": [date(2026, 7, 30)]}
+    assert _earnings_days_from_calendar(cal, today) == 3
+
+
+def test_earnings_days_from_calendar_handles_tz_aware_datetime():
+    import datetime as dt_mod
+    today = datetime(2026, 7, 27)
+    aware = datetime(2026, 8, 5, tzinfo=dt_mod.timezone.utc)
+    cal = {"Earnings Date": [aware]}
+    assert _earnings_days_from_calendar(cal, today) == 9
+
+
+def test_earnings_days_from_calendar_handles_string_date():
+    today = datetime(2026, 7, 27)
+    cal = {"Earnings Date": ["2026-07-31"]}
+    assert _earnings_days_from_calendar(cal, today) == 4
+
+
+def test_earnings_days_from_calendar_none_when_no_dates():
+    today = datetime(2026, 7, 27)
+    assert _earnings_days_from_calendar({}, today) is None
+    assert _earnings_days_from_calendar({"Earnings Date": []}, today) is None
