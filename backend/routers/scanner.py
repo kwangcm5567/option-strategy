@@ -4,11 +4,12 @@
 import math
 import os
 from datetime import datetime
+from typing import Literal
 
 import pandas as pd
 import requests
 import yfinance as yf
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from services import cache as cache_svc, cboe
 from services.scanner import scan_options, _calc_empirical_win_rate
@@ -73,17 +74,33 @@ STRATEGY_LABELS = {
 @router.get("/api/scan")
 def scan(
     strategies: str = Query(default="sell_put", description="逗号分隔：sell_put,buy_call,sell_call,buy_put"),
-    dte_min: int = Query(default=7, ge=1),
-    dte_max: int = Query(default=60, le=365),
+    dte_min: int = Query(default=7, ge=1, le=365),
+    dte_max: int = Query(default=60, ge=1, le=365),
     min_iv_rank: float = Query(default=0, ge=0, le=100),
     relaxed: bool = Query(default=False, description="放宽筛选门槛（市场平静期使用）"),
     force_refresh: bool = Query(default=False),
+    profile: Literal["simple", "advanced"] = "advanced",
+    fee_per_contract: float = Query(default=0.65, ge=0, le=100, allow_inf_nan=False),
+    slippage_per_share: float = Query(default=0.01, ge=0, le=10, allow_inf_nan=False),
+    max_capital: float = Query(default=0, ge=0, allow_inf_nan=False),
 ):
-    strategy_list = [s.strip() for s in strategies.split(",") if s.strip()]
+    strategy_list = sorted({s.strip() for s in strategies.split(",") if s.strip()})
+    if not strategy_list or any(s not in STRATEGY_LABELS for s in strategy_list):
+        raise HTTPException(422, "请选择有效策略")
+    if dte_min > dte_max:
+        raise HTTPException(422, "最短到期天数不能大于最长到期天数")
+    if profile == "simple":
+        if strategy_list != ["sell_put"] or relaxed or min_iv_rank != 0:
+            raise HTTPException(422, "简单模式仅支持现金担保 Put，不放宽筛选或使用 IV Rank")
+        dte_min, dte_max = max(30, dte_min), min(45, dte_max)
+        if dte_min > dte_max:
+            raise HTTPException(422, "简单模式到期范围为 30–45 天")
 
     def _key(rx: bool) -> str:
         mode = "rx" if rx else "std"
-        return f"scan:{'|'.join(sorted(strategy_list))}:{dte_min}:{dte_max}:{float(min_iv_rank)}:{mode}"
+        return (f"scan:v2:{profile}:{'|'.join(strategy_list)}:{dte_min}:{dte_max}:"
+                f"{float(min_iv_rank)}:{mode}:{float(fee_per_contract)}:"
+                f"{float(slippage_per_share)}:{float(max_capital)}")
 
     def _is_stale(rows) -> bool:
         return bool(rows) and all(r.get("stale") for r in rows)
@@ -103,10 +120,12 @@ def scan(
             "stale": _is_stale(rows),
             "bestEffort": _is_best_effort(rows),
             "source": _dominant_source(rows),
+            "profile": profile,
+            "noTrade": not rows,
         }
 
     if not force_refresh:
-        cached = cache_svc.get(_key(relaxed), ttl_seconds=3600)
+        cached = cache_svc.get(_key(relaxed), ttl_seconds=300 if profile == "simple" else 3600)
         # 收盘快照缓存只信 5 分钟，开盘后尽快换成实时数据
         if cached is not None and _is_stale(cached):
             cached = cache_svc.get(_key(relaxed), ttl_seconds=300)
@@ -119,33 +138,14 @@ def scan(
         dte_max=dte_max,
         min_iv_rank=min_iv_rank,
         relaxed=relaxed,
+        profile=profile,
+        fee_per_contract=fee_per_contract,
+        slippage_per_share=slippage_per_share,
+        max_capital=max_capital,
     )
     cache_svc.set(_key(relaxed), results)
 
-    # 严格模式下空结果 → 自动放宽再扫一轮
-    auto_relaxed = False
-    if not results and not relaxed:
-        results = scan_options(
-            strategies=strategy_list,
-            dte_min=dte_min,
-            dte_max=dte_max,
-            min_iv_rank=min_iv_rank,
-            relaxed=True,
-        )
-        cache_svc.set(_key(True), results)
-        auto_relaxed = True
-
-    # 放宽后仍空 → best_effort 兜底，门槛全开，保证至少给出候选（前端会醒目标注仅供参考）
-    if not results:
-        results = scan_options(
-            strategies=strategy_list,
-            dte_min=dte_min,
-            dte_max=dte_max,
-            min_iv_rank=min_iv_rank,
-            best_effort=True,
-        )
-
-    return _resp(results, cached=False, relaxed_flag=relaxed or auto_relaxed)
+    return _resp(results, cached=False, relaxed_flag=relaxed)
 
 
 @router.get("/api/analyze/{symbol}")
@@ -245,9 +245,9 @@ def analyze_option(
             "totalWindows": total,
             "safeWindows": safe,
             "triggeredWindows": total - safe,
-            "winRate": round(win_rate * 100, 2),
+            "winRate": round(win_rate * 100, 2) if win_rate is not None else None,
             "triggeredEvents": triggered,
-        },
+        } if strategy == "sell_put" else None,
         "chartData": chart_data,
         "newsAnalysis": {
             "overallSentiment": overall_sentiment,

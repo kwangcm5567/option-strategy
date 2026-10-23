@@ -8,8 +8,10 @@ import time
 
 logger = logging.getLogger("scanner")
 
-# 与前端默认参数一致（ScannerTab：sell_put / 7 / 60 / 0 / 非宽松）
-_DEFAULTS = dict(strategies="sell_put", dte_min=7, dte_max=60, min_iv_rank=0, relaxed=False)
+# 与简单模式的默认参数一致。
+_DEFAULTS = dict(strategies="sell_put", dte_min=30, dte_max=45, min_iv_rank=0,
+                 relaxed=False, profile="simple", fee_per_contract=0.65,
+                 slippage_per_share=0.01, max_capital=0)
 # SpreadsTab 默认策略 bull_put，路由默认 DTE 20–55；spreads 缓存 TTL 30min
 _SPREADS_DEFAULTS = dict(strategy="bull_put", dte_min=20, dte_max=55)
 _REFRESH_INTERVAL = 25 * 60  # < spreads 缓存 30min TTL，保持两类缓存都新鲜

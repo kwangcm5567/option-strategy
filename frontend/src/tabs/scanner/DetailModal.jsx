@@ -128,7 +128,7 @@ export default function DetailModal({ option, onClose }) {
 
             {/* ── 历史验证 ── */}
             {data?.historicalStats && (
-              <Section title="🛡️ 历史回测验证（过去 2 年）">
+              <Section title="历史股价路径统计（非策略盈利回测）">
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
                   {[
                     { label: '总测试窗口', value: data.historicalStats.totalWindows, color: null },
@@ -145,7 +145,7 @@ export default function DetailModal({ option, onClose }) {
                 <div style={{ padding: '0.75rem 1rem', background: 'rgba(16,185,129,0.08)', borderLeft: '3px solid #10b981', borderRadius: '0 8px 8px 0', marginBottom: '1rem' }}>
                   <Tooltip text={TIPS.popEmpirical}>
                     <span style={{ fontSize: '0.85rem', color: '#10b981', fontWeight: 700 }}>
-                      历史胜率：{data.historicalStats.winRate}%
+                      历史未触及比例：{data.historicalStats.winRate == null ? '样本不足' : `${data.historicalStats.winRate}%`}
                     </span>
                   </Tooltip>
                 </div>
@@ -157,7 +157,7 @@ export default function DetailModal({ option, onClose }) {
                     </summary>
                     <Tooltip text={TIPS.wheelStrategy} width={300}>
                       <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '0.5rem' }}>
-                        💼 即使被触发，并不代表一定亏损。通过向后滚仓（Roll Out）或接受转为持股（Wheel 策略），往往可以将暂时的亏损转化为时间损失而非真正的资本损失。
+                        触及行权价不等于已被行权，也不等于最终亏损。滚仓会实现旧仓盈亏并建立新仓；接股后仍承担股价下跌损失。
                       </p>
                     </Tooltip>
                     <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>

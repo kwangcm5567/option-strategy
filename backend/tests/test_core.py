@@ -72,7 +72,7 @@ def test_win_rate_strike_above_price_is_zero():
 
 def test_win_rate_empty_history():
     stats = _calc_empirical_win_rate(pd.DataFrame(), 30, 100, 90)
-    assert stats["win_rate"] == 1.0 and stats["total_windows"] == 0
+    assert stats["win_rate"] is None and stats["total_windows"] == 0
 
 
 def test_win_rate_reports_independent_sample_smaller_than_total():

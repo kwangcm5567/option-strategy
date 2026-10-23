@@ -7,6 +7,7 @@ import OptionCard from './OptionCard';
 import DetailModal from './DetailModal';
 import QuickAddModal from './QuickAddModal';
 import { TIPS } from '../../constants/tooltips';
+import SimpleScanner from './SimpleScanner';
 
 // ── 首次扫描专用 Loading（仅在没有任何数据时显示）────────────────────────────
 const SCAN_STEPS = [
@@ -103,6 +104,19 @@ function buildEndpoint(strategies, dteMin, dteMax, ivRank, relaxed) {
 const LS_ACCOUNT_KEY = 'alpha_account_size';
 
 export default function ScannerTab() {
+  const [advanced, setAdvanced] = useState(false);
+  return (
+    <>
+      <div className="scanner-mode-switch" aria-label="扫描模式">
+        <button aria-pressed={!advanced} onClick={() => setAdvanced(false)}>简单模式 · 现金担保 Put</button>
+        <button aria-pressed={advanced} onClick={() => setAdvanced(true)}>高级扫描</button>
+      </div>
+      {advanced ? <AdvancedScanner /> : <SimpleScanner />}
+    </>
+  );
+}
+
+function AdvancedScanner() {
   const [selectedStrategies, setSelectedStrategies] = useState(['sell_put']);
   const [dteMin, setDteMin] = useState(7);
   const [dteMax, setDteMax] = useState(60);
@@ -124,7 +138,7 @@ export default function ScannerTab() {
   const { data, loading, error, refetch } = useApi(endpoint, { timeout: 180_000 });
 
   useEffect(() => {
-    if (data?.data?.length > 0) {
+    if (data?.data) {
       setLastGoodOptions(data.data);
     }
   }, [data]);

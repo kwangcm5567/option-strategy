@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Tooltip from '../../components/ui/Tooltip';
 import { API_BASE } from '../../hooks/useApi';
 import { TIPS } from '../../constants/tooltips';
+import { riskLimitedContracts } from './positionSizing';
 
 const STRATEGY_CONFIG = {
   sell_put:  { label: '卖出 Put', color: '#10b981', bg: 'rgba(16,185,129,0.1)'  },
@@ -171,13 +172,12 @@ function LiquidityBar({ score }) {
 
 // ─── PoP 双显示 ───────────────────────────────────────────────────────────────
 function PoPBar({ theoretical, empirical, sampleSize, independentSampleSize }) {
-  const agreement = theoretical != null && empirical != null && Math.abs(theoretical - empirical) <= 10;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       {theoretical != null && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', marginBottom: '3px', color: 'var(--text-secondary)' }}>
-            <Tooltip text={TIPS.popTheoretical}><span>理论获利概率</span></Tooltip>
+            <Tooltip text={TIPS.popTheoretical}><span>模型到期价位概率</span></Tooltip>
             <span style={{ color: theoretical >= 70 ? '#10b981' : '#f59e0b' }}>{theoretical}%</span>
           </div>
           <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
@@ -188,7 +188,7 @@ function PoPBar({ theoretical, empirical, sampleSize, independentSampleSize }) {
       {empirical != null && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', marginBottom: '3px', color: 'var(--text-secondary)' }}>
-            <Tooltip text={TIPS.popEmpirical}><span>历史回测胜率</span></Tooltip>
+            <Tooltip text={TIPS.popEmpirical}><span>历史触及 / 未触及比例</span></Tooltip>
             <span style={{ color: empirical >= 70 ? '#10b981' : '#f59e0b' }}>{empirical}%</span>
           </div>
           <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
@@ -207,10 +207,7 @@ function PoPBar({ theoretical, empirical, sampleSize, independentSampleSize }) {
           )}
         </div>
       )}
-      {agreement && <p style={{ fontSize: '0.72rem', color: '#10b981' }}>✅ 理论与历史吻合，信号较可靠</p>}
-      {theoretical != null && empirical != null && !agreement && Math.abs(theoretical - empirical) > 15 && (
-        <p style={{ fontSize: '0.72rem', color: '#f59e0b' }}>⚠️ 理论与历史差距较大，需额外留意</p>
-      )}
+      <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>价位概率与历史触及比例口径不同，均不是扣除成本后的交易胜率。</p>
     </div>
   );
 }
@@ -223,10 +220,7 @@ function KeyLevels({ option }) {
   const rows = [];
 
   if (isSell && option.p50 != null) {
-    const btcTarget = isPut
-      ? (option.strike - option.premium / 2).toFixed(2)
-      : (option.strike + option.premium / 2).toFixed(2);
-    rows.push({ icon: '✅', label: '50% 止盈时股价需高于', price: `$${btcTarget}`, note: `BTC 价格：$${(option.premium / 2).toFixed(2)}`, color: '#10b981' });
+    rows.push({ icon: '✅', label: '50% 权利金买回参考', price: `$${(option.premium / 2).toFixed(2)}`, note: '期权买回价，不对应固定股价；未扣费用', color: '#10b981' });
   }
 
   rows.push({ icon: '📍', label: '行权价', price: `$${option.strike.toFixed(2)}`, note: '被行权分界线', color: 'var(--text-primary)' });
@@ -622,10 +616,8 @@ export default function OptionCard({ option, onClick, onQuickAdd, accountSize = 
 
       {/* ── 仓位建议（Kelly 2% 法则）── */}
       {accountSize > 0 && (() => {
-        const maxLossPerContract = option.capitalRequired ?? (option.strike * 100);
-        const riskBudget = accountSize * 0.02;
-        const suggested = Math.max(1, Math.floor(riskBudget / maxLossPerContract));
-        const capitalUsed = suggested * maxLossPerContract;
+        const suggested = riskLimitedContracts(accountSize, option.maxLoss, option.capitalRequired);
+        const capitalUsed = suggested * (option.capitalRequired ?? 0);
         const pct = Math.round(capitalUsed / accountSize * 100);
         return (
           <div style={{ background: 'rgba(96,165,250,0.06)', border: '1px solid rgba(96,165,250,0.15)', borderRadius: 8, padding: '0.4rem 0.65rem', marginBottom: '0.75rem', fontSize: '0.78rem' }}>
@@ -634,7 +626,7 @@ export default function OptionCard({ option, onClick, onQuickAdd, accountSize = 
               <span style={{ fontWeight: 700, color: '#60a5fa' }}>{suggested} 张</span>
             </div>
             <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>
-              占用保证金 ${capitalUsed.toLocaleString()} · 账户 {pct}%
+              {suggested === 0 ? '未满足 2% 最大损失预算，或最大损失 / 资金需求未知。' : `占用资金 $${capitalUsed.toLocaleString()} · 账户 ${pct}%（未扣现有持仓）`}
             </div>
           </div>
         );

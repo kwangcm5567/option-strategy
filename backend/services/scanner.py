@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -14,6 +15,7 @@ import yfinance as yf
 
 from . import cboe
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
+from .simple import SIMPLE_TICKERS, evaluate_put
 
 logger = logging.getLogger(__name__)
 
@@ -207,13 +209,13 @@ def _precompute_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
     trading_dte = max(1, int(dte * 252 / 365))
     windows = []
     for i in range(len(history_df) - trading_dte):
-        window = history_df.iloc[i: i + trading_dte]
-        start_price = float(window["Close"].iloc[0])
+        window = history_df.iloc[i + 1: i + trading_dte + 1]
+        start_price = float(history_df["Close"].iloc[i])
         if start_price <= 0:
             continue
         window_min = float(window["Low"].min())
         drop_pct = (start_price - window_min) / start_price
-        windows.append((window.index[0], start_price, window_min, drop_pct))
+        windows.append((history_df.index[i], start_price, window_min, drop_pct))
     return windows
 
 
@@ -224,13 +226,13 @@ def _precompute_up_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
     trading_dte = max(1, int(dte * 252 / 365))
     windows = []
     for i in range(len(history_df) - trading_dte):
-        window = history_df.iloc[i: i + trading_dte]
-        start_price = float(window["Close"].iloc[0])
+        window = history_df.iloc[i + 1: i + trading_dte + 1]
+        start_price = float(history_df["Close"].iloc[i])
         if start_price <= 0:
             continue
         window_max = float(window["High"].max())
         gain_pct = (window_max - start_price) / start_price
-        windows.append((window.index[0], start_price, window_max, gain_pct))
+        windows.append((history_df.index[i], start_price, window_max, gain_pct))
     return windows
 
 
@@ -250,7 +252,7 @@ def _calc_empirical_win_rate(history_df: pd.DataFrame, dte: int, current_price: 
     safe_windows、independent_windows（按 DTE 步长跳跃取样的独立样本数，
     用于让调用方判断胜率的统计可信度）、triggered_events。
     """
-    empty_result = {"win_rate": 1.0, "total_windows": 0, "safe_windows": 0,
+    empty_result = {"win_rate": None, "total_windows": 0, "safe_windows": 0,
                      "independent_windows": 0, "triggered_events": []}
     if history_df.empty or current_price <= 0:
         return empty_result
@@ -474,7 +476,7 @@ def _process_row(
     underlying_change_pct: float | None = None,
     source: str | None = None,
 ) -> dict | None:
-    dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
+    dte = (datetime.strptime(date_str, "%Y-%m-%d").date() - today.date()).days
     if dte <= 0:
         return None
 
@@ -488,16 +490,18 @@ def _process_row(
     volume = int(row["volume"]) if not pd.isna(row.get("volume", float("nan"))) else 0
     oi = int(row["openInterest"]) if not pd.isna(row.get("openInterest", float("nan"))) else 0
 
-    # 用 mid 兜底（许多活跃期权近期无成交但 bid/ask 有效）
-    mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0.0
-    premium = last_price if last_price > 0.05 else mid
+    quotes_live = all(math.isfinite(v) for v in (bid, ask)) and 0 < bid <= ask
+    if not quotes_live and not best_effort:
+        return None
+    premium = (bid if strategy.startswith("sell_") else ask) if quotes_live else last_price
+    if not all(math.isfinite(v) for v in (strike, premium, current_price, iv)):
+        return None
     if premium < 0.05:
         return None
 
     # IV：yfinance 原始值优先，不可靠时用历史波动率
     # 盘前/休市时 bid=ask=0，yfinance 的 IV 退化为垃圾量化值（如 6.3/12.5/50），
     # 会让 Delta 坍缩到 0、被门槛全过滤；此时一律改用历史波动率重估。
-    quotes_live = bid > 0 or ask > 0
     if iv < 0.005 or not quotes_live:
         iv = hist_vol
 
@@ -602,10 +606,10 @@ def _process_row(
     pop_independent_sample_size = None
     if strategy == "sell_put":
         win_stats = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
-        pop_empirical = round(win_stats["win_rate"] * 100, 1)
+        pop_empirical = round(win_stats["win_rate"] * 100, 1) if win_stats["win_rate"] is not None else None
         pop_sample_size = win_stats["total_windows"]
         pop_independent_sample_size = win_stats["independent_windows"]
-        if pop_empirical < th.pop_min:
+        if (pop_empirical is None or pop_empirical < th.pop_min) and not best_effort:
             return None
     elif strategy == "buy_put":
         pop_empirical = _empirical_win_put_buy(down_windows, distance_pct)
@@ -670,7 +674,8 @@ def _process_row(
         "ivRank": iv_rank,
         "bidAskSpread": bid_ask_spread,
         "bidAskSpreadPct": bid_ask_spread_pct,
-        "popTheoretical": greeks["pop"] if greeks else None,
+        "popTheoretical": (round(100 - greeks["pop"], 1)
+                           if strategy in ("sell_call", "buy_put") else greeks["pop"]) if greeks else None,
         "popEmpirical": pop_empirical,
         "popEmpiricalSampleSize": pop_sample_size,
         "popEmpiricalIndependentSampleSize": pop_independent_sample_size,
@@ -720,6 +725,9 @@ def _process_ticker(
     needs_up: bool,
     relaxed: bool = False,
     best_effort: bool = False,
+    profile: str = "advanced",
+    fee_per_contract: float = 0.65,
+    slippage_per_share: float = 0.01,
 ) -> list[dict]:
     try:
         ticker = yf.Ticker(symbol)
@@ -767,7 +775,7 @@ def _process_ticker(
 
         valid_dates = []
         for date_str in exp_dates:
-            dte_check = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
+            dte_check = (datetime.strptime(date_str, "%Y-%m-%d").date() - today.date()).days
             if dte_min <= dte_check <= dte_max:
                 valid_dates.append((date_str, dte_check))
         if not valid_dates:
@@ -777,12 +785,10 @@ def _process_ticker(
             indices = [0, len(valid_dates) // 3, len(valid_dates) * 2 // 3, len(valid_dates) - 1]
             valid_dates = [valid_dates[i] for i in sorted(set(indices))]
 
-        rep_dte = valid_dates[len(valid_dates) // 2][1]
-        down_win = _precompute_windows(history, rep_dte) if needs_down else None
-        up_win   = _precompute_up_windows(history, rep_dte) if needs_up else None
-
         results = []
         for date_str, dte_val in valid_dates:
+            down_win = _precompute_windows(history, dte_val) if needs_down else None
+            up_win = _precompute_up_windows(history, dte_val) if needs_up else None
             if src_data:
                 cc = src_data["chains"].get(date_str)
                 if cc is None:
@@ -799,6 +805,13 @@ def _process_ticker(
             for strategy in strategies:
                 rows = puts_df if strategy in ("sell_put", "buy_put") else calls_df
                 for _, row in rows.iterrows():
+                    if profile == "simple":
+                        item = evaluate_put(row, symbol, current_price, date_str, dte_val,
+                                            fee_per_contract, slippage_per_share)
+                        if item:
+                            item["source"] = source
+                            results.append(item)
+                        continue
                     item = _process_row(
                         row, symbol, current_price, history,
                         hist_vol, support_level, sma50,
@@ -837,16 +850,24 @@ def scan_options(
     min_iv_rank: float = 0,
     relaxed: bool = False,
     best_effort: bool = False,
+    profile: str = "advanced",
+    fee_per_contract: float = 0.65,
+    slippage_per_share: float = 0.01,
+    max_capital: float = 0,
 ) -> list[dict]:
     if strategies is None:
         strategies = ["sell_put"]
 
-    today = datetime.now()
-    earnings_map = _fetch_earnings_map()
-    dividend_map = _fetch_dividend_map()
+    simple = profile == "simple"
+    if simple:
+        strategies = ["sell_put"]
+        dte_min, dte_max = max(30, dte_min), min(45, dte_max)
+    today = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+    earnings_map = {} if simple else _fetch_earnings_map()
+    dividend_map = {} if simple else _fetch_dividend_map()
 
-    needs_down = any(s in strategies for s in ("sell_put", "buy_put"))
-    needs_up   = any(s in strategies for s in ("buy_call", "sell_call"))
+    needs_down = not simple and any(s in strategies for s in ("sell_put", "buy_put"))
+    needs_up = not simple and any(s in strategies for s in ("buy_call", "sell_call"))
 
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -855,8 +876,9 @@ def scan_options(
                 _process_ticker,
                 sym, strategies, today, dte_min, dte_max,
                 earnings_map, dividend_map, needs_down, needs_up, relaxed, best_effort,
+                profile, fee_per_contract, slippage_per_share,
             ): sym
-            for sym in TICKERS
+            for sym in (SIMPLE_TICKERS if simple else TICKERS)
         }
         for fut in as_completed(futures):
             results.extend(fut.result())
@@ -864,7 +886,13 @@ def scan_options(
     if min_iv_rank > 0:
         results = [r for r in results if (r.get("ivRank") or 0) >= min_iv_rank]
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    if simple:
+        if max_capital > 0:
+            results = [r for r in results if r["capitalRequired"] <= max_capital]
+        results.sort(key=lambda r: (abs(abs(r["delta"]) - 0.20), r["bidAskSpreadPct"],
+                                    -r["netReturnPct"], r["symbol"], r["expirationDate"], r["strike"]))
+    else:
+        results.sort(key=lambda x: x["score"], reverse=True)
 
     seen: set[tuple] = set()
     top: list[dict] = []

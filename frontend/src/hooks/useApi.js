@@ -29,17 +29,20 @@ export function useApi(endpoint, { timeout = 120_000 } = {}) {
         throw new Error(body.detail || `服务器返回错误 ${res.status}`);
       }
       const json = await res.json();
-      setData(json);
+      if (abortRef.current === controller && !controller.signal.aborted) setData(json);
     } catch (err) {
       clearTimeout(timeoutId);
+      if (abortRef.current !== controller) return;
       if (err.name === 'AbortError') {
         setError('请求超时或被中断，请点击「刷新数据」重试。');
       } else {
         setError(err.message);
       }
     } finally {
-      setLoading(false);
-      loadingRef.current = false;
+      if (abortRef.current === controller) {
+        setLoading(false);
+        loadingRef.current = false;
+      }
     }
   }, [timeout]);
 
