@@ -5,13 +5,17 @@ import logging
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 import yfinance as yf
 
+from . import cboe
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
+from .simple import SIMPLE_TICKERS, evaluate_put
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,57 @@ TICKERS = [
     # Other large-cap
     "BX", "PLTR",
 ]
+
+# ETF 没有财报，跳过财报日历查询（否则 yfinance 返回一堆 404 噪音）
+ETFS = {"SPY", "QQQ", "IWM", "GLD"}
+
+
+# ─── 过滤门槛（三档，调参只改这里）──────────────────────────────────────────
+
+@dataclass(frozen=True)
+class FilterThresholds:
+    dist_min: float        # 卖方：行权价距现价最小 %
+    dist_max: float        # 卖方：距离最大 %
+    buy_dist_max: float    # 买方：距离最大 %（不要太深 OTM）
+    ann_min_sp: float      # sell_put 年化收益下限 %
+    ann_min_sc: float      # sell_call 年化收益下限 %
+    ann_max: float         # 年化收益上限 %（过高=风险异常）
+    std_min: float         # σ-距离下限
+    roc_max: float         # ROC 上限
+    delta_min: float       # 卖方 |Delta| 下限
+    delta_max: float       # 卖方 |Delta| 上限
+    delta_buy_min: float   # 买方 |Delta| 下限
+    pop_min: float         # 经验胜率下限 %
+    vol_min: int           # 当日成交量下限
+    oi_min: int            # 未平仓量下限
+
+
+FILTER_PROFILES = {
+    # 机构级默认门槛
+    "strict": FilterThresholds(
+        dist_min=2.0, dist_max=20.0, buy_dist_max=15.0,
+        ann_min_sp=8, ann_min_sc=3, ann_max=80,
+        std_min=1.0, roc_max=40,
+        delta_min=0.10, delta_max=0.40, delta_buy_min=0.30,
+        pop_min=70, vol_min=3, oi_min=10,
+    ),
+    # 放宽模式：市场平静 / 熊市时放松机构级门槛，让用户至少看到候选
+    "relaxed": FilterThresholds(
+        dist_min=1.0, dist_max=30.0, buy_dist_max=25.0,
+        ann_min_sp=3, ann_min_sc=1.5, ann_max=120,
+        std_min=0.7, roc_max=60,
+        delta_min=0.05, delta_max=0.50, delta_buy_min=0.20,
+        pop_min=55, vol_min=3, oi_min=10,
+    ),
+    # best_effort：质量门槛全开，只保留结构性约束，保证总能给出候选（仅供参考）
+    "best_effort": FilterThresholds(
+        dist_min=0.0, dist_max=999.0, buy_dist_max=999.0,
+        ann_min_sp=-999, ann_min_sc=-999, ann_max=999999,
+        std_min=0.0, roc_max=999999,
+        delta_min=0.0, delta_max=1.0, delta_buy_min=0.0,
+        pop_min=0, vol_min=0, oi_min=0,
+    ),
+}
 
 # ─── 批量拉取财报日期（FMP 优先，yfinance fallback）────────────────────────
 
@@ -68,29 +123,41 @@ def _fetch_earnings_map() -> dict[str, int]:
         except Exception:
             pass
 
-    for sym in [s for s in TICKERS if s not in result]:
+    for sym in [s for s in TICKERS if s not in result and s not in ETFS]:
         try:
             cal = yf.Ticker(sym).calendar
-            dt = None
-            if isinstance(cal, dict):
-                dates = cal.get("Earnings Date") or cal.get("earningsDate") or []
-                if dates:
-                    d = dates[0]
-                    if isinstance(d, str):
-                        dt = datetime.strptime(d[:10], "%Y-%m-%d")
-                    elif hasattr(d, "tzinfo"):
-                        dt = d.replace(tzinfo=None)
-                    else:
-                        dt = d
-            elif hasattr(cal, "iloc") and "Earnings Date" in cal.index:
-                d = cal.loc["Earnings Date"].iloc[0]
-                dt = d.replace(tzinfo=None) if hasattr(d, "tzinfo") else d
-            if dt is not None:
-                result[sym] = (dt - today).days
+            days = _earnings_days_from_calendar(cal, today)
+            if days is not None:
+                result[sym] = days
         except Exception:
             pass
 
     return result
+
+
+def _earnings_days_from_calendar(cal, today: datetime) -> int | None:
+    """从 yfinance Ticker.calendar 返回值中解析下一次财报日期，返回距今天数。
+    yfinance 返回的日期是 date 对象（无 tzinfo），跟 datetime 类型的 today 直接相减
+    会因类型不匹配抛 TypeError；这里统一转成 date 再相减。"""
+    dt = None
+    if isinstance(cal, dict):
+        dates = cal.get("Earnings Date") or cal.get("earningsDate") or []
+        if dates:
+            d = dates[0]
+            if isinstance(d, str):
+                dt = datetime.strptime(d[:10], "%Y-%m-%d")
+            elif hasattr(d, "tzinfo"):
+                dt = d.replace(tzinfo=None)
+            else:
+                dt = d
+    elif hasattr(cal, "iloc") and "Earnings Date" in cal.index:
+        d = cal.loc["Earnings Date"].iloc[0]
+        dt = d.replace(tzinfo=None) if hasattr(d, "tzinfo") else d
+
+    if dt is None:
+        return None
+    dt_date = dt.date() if isinstance(dt, datetime) else dt
+    return (dt_date - today.date()).days
 
 
 # ─── 批量拉取除息日（FMP 优先）────────────────────────────────────────────
@@ -142,13 +209,13 @@ def _precompute_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
     trading_dte = max(1, int(dte * 252 / 365))
     windows = []
     for i in range(len(history_df) - trading_dte):
-        window = history_df.iloc[i: i + trading_dte]
-        start_price = float(window["Close"].iloc[0])
+        window = history_df.iloc[i + 1: i + trading_dte + 1]
+        start_price = float(history_df["Close"].iloc[i])
         if start_price <= 0:
             continue
         window_min = float(window["Low"].min())
         drop_pct = (start_price - window_min) / start_price
-        windows.append((window.index[0], start_price, window_min, drop_pct))
+        windows.append((history_df.index[i], start_price, window_min, drop_pct))
     return windows
 
 
@@ -159,25 +226,40 @@ def _precompute_up_windows(history_df: pd.DataFrame, dte: int) -> list[tuple]:
     trading_dte = max(1, int(dte * 252 / 365))
     windows = []
     for i in range(len(history_df) - trading_dte):
-        window = history_df.iloc[i: i + trading_dte]
-        start_price = float(window["Close"].iloc[0])
+        window = history_df.iloc[i + 1: i + trading_dte + 1]
+        start_price = float(history_df["Close"].iloc[i])
         if start_price <= 0:
             continue
         window_max = float(window["High"].max())
         gain_pct = (window_max - start_price) / start_price
-        windows.append((window.index[0], start_price, window_max, gain_pct))
+        windows.append((history_df.index[i], start_price, window_max, gain_pct))
     return windows
 
 
+def _independent_sample_count(windows: list[tuple], trading_dte: int) -> int:
+    """按 trading_dte 步长跳跃取样，返回互不重叠窗口数（用于暴露真实统计独立性）。"""
+    if not windows:
+        return 0
+    step = max(1, trading_dte)
+    return len(windows[::step])
+
+
 def _calc_empirical_win_rate(history_df: pd.DataFrame, dte: int, current_price: float, strike: float,
-                              _windows: list[tuple] | None = None):
-    """sell_put 经验胜率：股价从未跌破行权价的窗口比例。"""
+                              _windows: list[tuple] | None = None) -> dict:
+    """sell_put 经验胜率：股价从未跌破行权价的窗口比例。
+
+    返回 dict：win_rate（重叠窗口胜率）、total_windows（重叠窗口总数）、
+    safe_windows、independent_windows（按 DTE 步长跳跃取样的独立样本数，
+    用于让调用方判断胜率的统计可信度）、triggered_events。
+    """
+    empty_result = {"win_rate": None, "total_windows": 0, "safe_windows": 0,
+                     "independent_windows": 0, "triggered_events": []}
     if history_df.empty or current_price <= 0:
-        return 1.0, 0, 0, []
+        return empty_result
 
     required_drop_pct = (current_price - strike) / current_price
     if required_drop_pct <= 0:
-        return 0.0, 0, 0, []
+        return {**empty_result, "win_rate": 0.0}
 
     if _windows is None:
         _windows = _precompute_windows(history_df, dte)
@@ -208,9 +290,15 @@ def _calc_empirical_win_rate(history_df: pd.DataFrame, dte: int, current_price: 
                     last["drawdown_pct"] = round(drop_pct * 100, 2)
 
     if total_windows == 0:
-        return 1.0, 0, 0, []
+        return empty_result
 
-    return safe_windows / total_windows, total_windows, safe_windows, triggered_events
+    return {
+        "win_rate": safe_windows / total_windows,
+        "total_windows": total_windows,
+        "safe_windows": safe_windows,
+        "independent_windows": _independent_sample_count(_windows, trading_dte),
+        "triggered_events": triggered_events,
+    }
 
 
 def _empirical_win_call(up_windows: list[tuple], distance_pct: float) -> float | None:
@@ -383,10 +471,16 @@ def _process_row(
     rsi: float = 50.0,
     macd_info: dict | None = None,
     sma200: float | None = None,
+    relaxed: bool = False,
+    best_effort: bool = False,
+    underlying_change_pct: float | None = None,
+    source: str | None = None,
 ) -> dict | None:
-    dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
+    dte = (datetime.strptime(date_str, "%Y-%m-%d").date() - today.date()).days
     if dte <= 0:
         return None
+
+    th = FILTER_PROFILES["best_effort" if best_effort else "relaxed" if relaxed else "strict"]
 
     strike = float(row["strike"])
     last_price = float(row["lastPrice"]) if not pd.isna(row["lastPrice"]) else 0.0
@@ -396,17 +490,22 @@ def _process_row(
     volume = int(row["volume"]) if not pd.isna(row.get("volume", float("nan"))) else 0
     oi = int(row["openInterest"]) if not pd.isna(row.get("openInterest", float("nan"))) else 0
 
-    # 用 mid 兜底（许多活跃期权近期无成交但 bid/ask 有效）
-    mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0.0
-    premium = last_price if last_price > 0.05 else mid
+    quotes_live = all(math.isfinite(v) for v in (bid, ask)) and 0 < bid <= ask
+    if not quotes_live and not best_effort:
+        return None
+    premium = (bid if strategy.startswith("sell_") else ask) if quotes_live else last_price
+    if not all(math.isfinite(v) for v in (strike, premium, current_price, iv)):
+        return None
     if premium < 0.05:
         return None
 
     # IV：yfinance 原始值优先，不可靠时用历史波动率
-    if iv < 0.005:
+    # 盘前/休市时 bid=ask=0，yfinance 的 IV 退化为垃圾量化值（如 6.3/12.5/50），
+    # 会让 Delta 坍缩到 0、被门槛全过滤；此时一律改用历史波动率重估。
+    if iv < 0.005 or not quotes_live:
         iv = hist_vol
 
-    if volume < 3 or oi < 10:
+    if volume < th.vol_min or oi < th.oi_min:
         return None
 
     bid_ask_spread = round(ask - bid, 2)
@@ -450,23 +549,23 @@ def _process_row(
 
     # 距离过滤（避免深 OTM 垃圾期权）
     if strategy in ("sell_put", "sell_call"):
-        if not (2.0 <= distance_pct <= 20.0):
+        if not (th.dist_min <= distance_pct <= th.dist_max):
             return None
-        if strategy == "sell_put" and (annualized_return < 8 or annualized_return > 80):
+        if strategy == "sell_put" and (annualized_return < th.ann_min_sp or annualized_return > th.ann_max):
             return None
-        if strategy == "sell_call" and (annualized_return < 3 or annualized_return > 80):
+        if strategy == "sell_call" and (annualized_return < th.ann_min_sc or annualized_return > th.ann_max):
             return None
     else:
-        if distance_pct > 15.0:  # 买方不要太深 OTM
+        if distance_pct > th.buy_dist_max:  # 买方不要太深 OTM
             return None
 
-    if strategy == "buy_call" and current_price < sma50:
+    if strategy == "buy_call" and current_price < sma50 and not best_effort:
         return None
 
     # ── 机构标准：σ-标准化距离（1.2σ 为甜点，≥ 1.0σ 为最低准入）──
     exp_move_pct_raw = iv * math.sqrt(dte / 365) * 100
     std_distance = round(distance_pct / exp_move_pct_raw, 2) if exp_move_pct_raw > 0 else None
-    if strategy in ("sell_put", "sell_call") and std_distance is not None and std_distance < 1.0:
+    if strategy in ("sell_put", "sell_call") and std_distance is not None and std_distance < th.std_min:
         return None
 
     # ── 机构标准：ROC（权利金/最大亏损 年化）──
@@ -476,7 +575,7 @@ def _process_row(
         roc = round(premium / strike * (365 / dte) * 100, 1)
     else:
         roc = None
-    if strategy in ("sell_put", "sell_call") and roc is not None and roc > 40:
+    if strategy in ("sell_put", "sell_call") and roc is not None and roc > th.roc_max:
         return None
 
     # IV 溢价（IV 相对历史波动率的超额；正值对卖方有利）
@@ -492,21 +591,25 @@ def _process_row(
         d_abs = abs(greeks["delta"])
         if strategy in ("sell_put", "sell_call"):
             # 卖方甜点：Delta 0.10-0.40（太低=深OTM低回报，太高=高风险）
-            if not (0.10 <= d_abs <= 0.40):
+            if not (th.delta_min <= d_abs <= th.delta_max):
                 return None
         elif strategy == "buy_call":
             # 买方需要足够方向性敞口
-            if d_abs < 0.30:
+            if d_abs < th.delta_buy_min:
                 return None
         elif strategy == "buy_put":
-            if d_abs < 0.30:
+            if d_abs < th.delta_buy_min:
                 return None
 
     # ── 四种策略的经验胜率 ──
+    pop_sample_size = None
+    pop_independent_sample_size = None
     if strategy == "sell_put":
-        win_rate, _, _, _ = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
-        pop_empirical = round(win_rate * 100, 1)
-        if pop_empirical < 70:
+        win_stats = _calc_empirical_win_rate(history_1y, dte, current_price, strike, down_windows)
+        pop_empirical = round(win_stats["win_rate"] * 100, 1) if win_stats["win_rate"] is not None else None
+        pop_sample_size = win_stats["total_windows"]
+        pop_independent_sample_size = win_stats["independent_windows"]
+        if (pop_empirical is None or pop_empirical < th.pop_min) and not best_effort:
             return None
     elif strategy == "buy_put":
         pop_empirical = _empirical_win_put_buy(down_windows, distance_pct)
@@ -571,8 +674,11 @@ def _process_row(
         "ivRank": iv_rank,
         "bidAskSpread": bid_ask_spread,
         "bidAskSpreadPct": bid_ask_spread_pct,
-        "popTheoretical": greeks["pop"] if greeks else None,
+        "popTheoretical": (round(100 - greeks["pop"], 1)
+                           if strategy in ("sell_call", "buy_put") else greeks["pop"]) if greeks else None,
         "popEmpirical": pop_empirical,
+        "popEmpiricalSampleSize": pop_sample_size,
+        "popEmpiricalIndependentSampleSize": pop_independent_sample_size,
         "p50": p50,
         "volume": volume,
         "openInterest": oi,
@@ -595,6 +701,11 @@ def _process_row(
         "macdAccel":     macd_info.get("accelerating") if macd_info else None,
         "macdHistogram": macd_info.get("histogram")    if macd_info else None,
         "aboveSma200":   (current_price >= sma200)     if sma200 is not None else None,
+        "relaxed": relaxed,
+        "stale": not quotes_live,
+        "bestEffort": best_effort,
+        "underlyingChangePct": underlying_change_pct,
+        "source": source,
     }
     result["score"] = round(_score(result), 4)
     return result
@@ -612,10 +723,18 @@ def _process_ticker(
     dividend_map: dict,
     needs_down: bool,
     needs_up: bool,
+    relaxed: bool = False,
+    best_effort: bool = False,
+    profile: str = "advanced",
+    fee_per_contract: float = 0.65,
+    slippage_per_share: float = 0.01,
 ) -> list[dict]:
     try:
         ticker = yf.Ticker(symbol)
-        history = ticker.history(period="1y")
+        # 历史日线优先 CBOE（不封机房 IP、无配额），yfinance 仅兜底
+        history = cboe.fetch_history(symbol)
+        if history.empty:
+            history = ticker.history(period="1y")
         if history.empty:
             return []
 
@@ -644,11 +763,19 @@ def _process_ticker(
 
         gap_risk_count = int((daily_ret < -0.05).sum())
 
-        exp_dates = ticker.options
+        # 期权链数据源：CBOE（免费、不封 IP）→ yfinance 兜底
+        src_data = cboe.fetch(symbol)
+        source = "cboe" if src_data else "yfinance"
+
+        underlying_change_pct = src_data["change_pct"] if src_data else None
+        if src_data and src_data.get("current_price"):
+            current_price = src_data["current_price"]
+
+        exp_dates = sorted(src_data["chains"].keys()) if src_data else ticker.options
 
         valid_dates = []
         for date_str in exp_dates:
-            dte_check = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
+            dte_check = (datetime.strptime(date_str, "%Y-%m-%d").date() - today.date()).days
             if dte_min <= dte_check <= dte_max:
                 valid_dates.append((date_str, dte_check))
         if not valid_dates:
@@ -658,21 +785,33 @@ def _process_ticker(
             indices = [0, len(valid_dates) // 3, len(valid_dates) * 2 // 3, len(valid_dates) - 1]
             valid_dates = [valid_dates[i] for i in sorted(set(indices))]
 
-        rep_dte = valid_dates[len(valid_dates) // 2][1]
-        down_win = _precompute_windows(history, rep_dte) if needs_down else None
-        up_win   = _precompute_up_windows(history, rep_dte) if needs_up else None
-
         results = []
         for date_str, dte_val in valid_dates:
-            try:
-                chain = ticker.option_chain(date_str)
-            except Exception as e:
-                logger.warning("[scanner] %s %s option_chain 失败: %s", symbol, date_str, e)
-                continue
+            down_win = _precompute_windows(history, dte_val) if needs_down else None
+            up_win = _precompute_up_windows(history, dte_val) if needs_up else None
+            if src_data:
+                cc = src_data["chains"].get(date_str)
+                if cc is None:
+                    continue
+                puts_df, calls_df = cc["puts"], cc["calls"]
+            else:
+                try:
+                    chain = ticker.option_chain(date_str)
+                except Exception as e:
+                    logger.warning("[scanner] %s %s option_chain 失败: %s", symbol, date_str, e)
+                    continue
+                puts_df, calls_df = chain.puts, chain.calls
 
             for strategy in strategies:
-                rows = chain.puts if strategy in ("sell_put", "buy_put") else chain.calls
+                rows = puts_df if strategy in ("sell_put", "buy_put") else calls_df
                 for _, row in rows.iterrows():
+                    if profile == "simple":
+                        item = evaluate_put(row, symbol, current_price, date_str, dte_val,
+                                            fee_per_contract, slippage_per_share)
+                        if item:
+                            item["source"] = source
+                            results.append(item)
+                        continue
                     item = _process_row(
                         row, symbol, current_price, history,
                         hist_vol, support_level, sma50,
@@ -687,6 +826,10 @@ def _process_ticker(
                         rsi=rsi,
                         macd_info=macd_info,
                         sma200=sma200,
+                        relaxed=relaxed,
+                        best_effort=best_effort,
+                        underlying_change_pct=underlying_change_pct,
+                        source=source,
                     )
                     if item:
                         results.append(item)
@@ -705,16 +848,26 @@ def scan_options(
     dte_min: int = 7,
     dte_max: int = 60,
     min_iv_rank: float = 0,
+    relaxed: bool = False,
+    best_effort: bool = False,
+    profile: str = "advanced",
+    fee_per_contract: float = 0.65,
+    slippage_per_share: float = 0.01,
+    max_capital: float = 0,
 ) -> list[dict]:
     if strategies is None:
         strategies = ["sell_put"]
 
-    today = datetime.now()
-    earnings_map = _fetch_earnings_map()
-    dividend_map = _fetch_dividend_map()
+    simple = profile == "simple"
+    if simple:
+        strategies = ["sell_put"]
+        dte_min, dte_max = max(30, dte_min), min(45, dte_max)
+    today = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+    earnings_map = {} if simple else _fetch_earnings_map()
+    dividend_map = {} if simple else _fetch_dividend_map()
 
-    needs_down = any(s in strategies for s in ("sell_put", "buy_put"))
-    needs_up   = any(s in strategies for s in ("buy_call", "sell_call"))
+    needs_down = not simple and any(s in strategies for s in ("sell_put", "buy_put"))
+    needs_up = not simple and any(s in strategies for s in ("buy_call", "sell_call"))
 
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -722,9 +875,10 @@ def scan_options(
             pool.submit(
                 _process_ticker,
                 sym, strategies, today, dte_min, dte_max,
-                earnings_map, dividend_map, needs_down, needs_up,
+                earnings_map, dividend_map, needs_down, needs_up, relaxed, best_effort,
+                profile, fee_per_contract, slippage_per_share,
             ): sym
-            for sym in TICKERS
+            for sym in (SIMPLE_TICKERS if simple else TICKERS)
         }
         for fut in as_completed(futures):
             results.extend(fut.result())
@@ -732,7 +886,13 @@ def scan_options(
     if min_iv_rank > 0:
         results = [r for r in results if (r.get("ivRank") or 0) >= min_iv_rank]
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    if simple:
+        if max_capital > 0:
+            results = [r for r in results if r["capitalRequired"] <= max_capital]
+        results.sort(key=lambda r: (abs(abs(r["delta"]) - 0.20), r["bidAskSpreadPct"],
+                                    -r["netReturnPct"], r["symbol"], r["expirationDate"], r["strike"]))
+    else:
+        results.sort(key=lambda x: x["score"], reverse=True)
 
     seen: set[tuple] = set()
     top: list[dict] = []

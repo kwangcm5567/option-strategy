@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Trash2, TrendingUp, TrendingDown, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Trash2, TrendingUp, TrendingDown, X, ChevronDown, ChevronRight, Upload } from 'lucide-react';
 import { apiFetch } from '../../hooks/useApi';
 import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
 import { TIPS } from '../../constants/tooltips';
+import usePortfolioSnapshot from '../../hooks/usePortfolioSnapshot';
 
 const STRATEGIES = [
   { value: 'sell_put',  label: '卖出 Put'  },
@@ -36,12 +37,16 @@ function pnlColor(v) {
 }
 
 function fmt$(v) {
+  if (!Number.isFinite(v)) return '—';
   const abs = Math.abs(v).toFixed(2);
   return v >= 0 ? `+$${abs}` : `-$${abs}`;
 }
 
 function DaysUntil({ dateStr }) {
-  const days = Math.ceil((new Date(dateStr) - new Date()) / 86400000);
+  const nyDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+  const days = Math.round((Date.parse(dateStr) - Date.parse(nyDate)) / 86400000);
   if (days < 0) return <span style={{ color: '#ef4444' }}>已到期</span>;
   if (days <= 7) return <span style={{ color: '#f59e0b' }}>{days}天到期 ⚠️</span>;
   return <span style={{ color: '#10b981' }}>{days}天到期</span>;
@@ -57,17 +62,6 @@ const SCENARIOS = [
   { label: '大涨 15%', spotChg: 0.15,  ivChg: -0.20 },
 ];
 
-function calcScenarioPnl(pnlRows, spotChgPct, ivChgPct) {
-  let total = 0;
-  for (const row of pnlRows) {
-    if (!row.delta || !row.currentPrice) continue;
-    const dS = row.currentPrice * spotChgPct;
-    const dPremium = row.delta * dS;
-    total += dPremium * 100; // per contract
-  }
-  return total;
-}
-
 // ── 滚仓提醒 ─────────────────────────────────────────────────────────────────
 
 function RollAlert({ symbol, strike, premium, expirationDate }) {
@@ -82,7 +76,8 @@ function RollAlert({ symbol, strike, premium, expirationDate }) {
     setLoading(true);
     try {
       const res = await apiFetch('GET', `/api/simulate-roll/${symbol}?strike=${strike}&premium=${premium}&dte=${dte}`);
-      setRollData(res);
+      if (res.status === 'success') setRollData(res.data);
+      else setRollData({ error: res.message || '无法获取滚仓方案' });
     } catch {
       setRollData({ error: '无法获取滚仓方案' });
     } finally {
@@ -104,13 +99,15 @@ function RollAlert({ symbol, strike, premium, expirationDate }) {
         <div style={{ marginTop: '0.6rem', padding: '0.5rem 0.65rem', background: 'rgba(0,0,0,0.2)', borderRadius: 6, lineHeight: 1.7 }}>
           <div style={{ color: '#f59e0b', fontWeight: 600 }}>建议滚仓方案：</div>
           <div style={{ color: 'var(--text-secondary)' }}>
-            新到期日 <span style={{ color: 'var(--text-primary)' }}>{rollData.newExpiration}</span> ·
-            新行权价 <span style={{ color: 'var(--text-primary)' }}>${rollData.newStrike}</span> ·
-            净权利金 <span style={{ color: rollData.netCredit >= 0 ? '#10b981' : '#ef4444' }}>
-              {rollData.netCredit >= 0 ? '+' : ''}${rollData.netCredit?.toFixed(2)}
+            新到期日 <span style={{ color: 'var(--text-primary)' }}>{rollData.roll_date}</span> ·
+            新行权价 <span style={{ color: 'var(--text-primary)' }}>${rollData.roll_strike}</span> ·
+            净权利金 <span style={{ color: rollData.net_credit >= 0 ? '#10b981' : '#ef4444' }}>
+              {rollData.net_credit >= 0 ? '+' : ''}${rollData.net_credit?.toFixed(2)}
             </span>
           </div>
-          {rollData.note && <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>{rollData.note}</div>}
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+            距今 {rollData.roll_dte} 天 · 新权利金 ${rollData.roll_premium?.toFixed(2)} · 假设平仓成本 ${rollData.btc_cost?.toFixed(2)}
+          </div>
         </div>
       )}
       {open && rollData?.error && (
@@ -144,27 +141,27 @@ function GreeksPanel({ greeks }) {
           {[
             {
               label: '净 Delta',
-              value: totalDelta >= 0 ? `+${totalDelta.toFixed(3)}` : totalDelta.toFixed(3),
+              value: totalDelta == null ? '—' : totalDelta >= 0 ? `+${totalDelta.toFixed(3)}` : totalDelta.toFixed(3),
               color: totalDelta >= 0 ? '#10b981' : '#ef4444',
-              hint: `大盘每涨 $1，组合盈亏约 ${totalDelta >= 0 ? '+' : ''}$${(totalDelta).toFixed(0)}`,
+              hint: totalDelta == null ? '部分合约缺少报价或 IV，无法完整计算' : '各标的同时上涨 $1 时的期权组合盈亏变化近似值',
             },
             {
               label: '每日 Theta 收入',
-              value: `+$${dailyThetaIncome.toFixed(2)}`,
+              value: fmt$(dailyThetaIncome),
               color: '#f59e0b',
-              hint: '每天时间衰减带来的权利金收入（前提：股价不动）',
+              hint: '理论每日时间价值变化，非保证收入（股价与 IV 不变）',
             },
             {
               label: '净 Vega 敞口',
-              value: `$${totalVega.toFixed(2)}`,
+              value: fmt$(totalVega),
               color: totalVega >= 0 ? '#10b981' : '#ef4444',
               hint: 'IV 每升 1%，组合盈亏变动金额（卖方为负）',
             },
             {
-              label: '总占用保证金',
-              value: `$${totalCapitalAtRisk.toLocaleString()}`,
+              label: '现金担保 / 买方投入',
+              value: totalCapitalAtRisk == null ? '—' : `$${totalCapitalAtRisk.toLocaleString()}`,
               color: 'var(--text-primary)',
-              hint: '卖 Put：行权价×100股；买 Call：权利金×100股',
+              hint: '卖 Put 按全额接股现金计算；非券商实际保证金。买方按开仓权利金计算。',
             },
           ].map(({ label, value, color, hint }) => (
             <div key={label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: '8px', padding: '0.65rem 0.85rem' }}>
@@ -182,8 +179,10 @@ function GreeksPanel({ greeks }) {
 // ── 汇总条 ───────────────────────────────────────────────────────────────────
 
 function SummaryBar({ positions, pnlMap, closedPositions }) {
-  const openPnl = positions.reduce((s, p) => s + (pnlMap[p.id]?.unrealizedPnl || 0), 0);
-  const totalPremium = positions.reduce((s, p) => s + p.premium * p.quantity * 100, 0);
+  const available = positions.filter(p => Number.isFinite(pnlMap[p.id]?.unrealizedPnl));
+  const openPnl = available.length === positions.length
+    ? positions.reduce((s, p) => s + pnlMap[p.id].unrealizedPnl, 0) : null;
+  const totalPremium = positions.reduce((s, p) => s + p.premium * p.quantity * 100 * (SELL_STRATEGIES.has(p.strategy) ? 1 : -1), 0);
   const realizedTotal = closedPositions.reduce((s, p) => s + (p.realized_pnl || 0), 0);
   const wins = closedPositions.filter(p => (p.realized_pnl || 0) > 0).length;
   const winRate = closedPositions.length > 0 ? Math.round(wins / closedPositions.length * 100) : null;
@@ -191,8 +190,8 @@ function SummaryBar({ positions, pnlMap, closedPositions }) {
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
       {[
-        { label: '未实现盈亏', value: fmt$(openPnl), color: pnlColor(openPnl) },
-        { label: '已收权利金', value: `$${totalPremium.toFixed(2)}`, color: '#f59e0b' },
+        { label: openPnl == null ? `未实现盈亏（报价 ${available.length}/${positions.length}）` : '未实现盈亏（平仓报价估算，未扣费用）', value: fmt$(openPnl), color: pnlColor(openPnl) },
+        { label: '开仓净权利金', value: fmt$(totalPremium), color: '#f59e0b' },
         { label: '历史实现收益', value: fmt$(realizedTotal), color: pnlColor(realizedTotal) },
         ...(winRate !== null ? [{ label: `胜率（${closedPositions.length}笔）`, value: `${winRate}%`, color: winRate >= 60 ? '#10b981' : '#f59e0b' }] : []),
       ].map(({ label, value, color }) => (
@@ -207,7 +206,7 @@ function SummaryBar({ positions, pnlMap, closedPositions }) {
 
 // ── 压力测试面板 ─────────────────────────────────────────────────────────────
 
-function StressPanel({ pnlData }) {
+function StressPanel({ pnlData, scenarios }) {
   const [open, setOpen] = useState(false);
   if (!pnlData || pnlData.length === 0) return null;
 
@@ -218,21 +217,21 @@ function StressPanel({ pnlData }) {
         style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-primary)', width: '100%', fontSize: '0.9rem', fontWeight: 700 }}
       >
         {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-        🧪 压力测试（Delta 近似）
+        🧪 压力测试（价格 + IV 重估）
       </button>
       {open && (
         <div style={{ marginTop: '0.85rem', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                {['场景', '价格变动', 'IV变动', '组合预估盈亏'].map(h => (
+                {['场景', '价格变动', 'IV 相对变化', '相对当前的模型盈亏变化'].map(h => (
                   <th key={h} style={{ padding: '0.4rem 0.7rem', textAlign: 'left', color: 'var(--text-secondary)', fontWeight: 600 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {SCENARIOS.map(sc => {
-                const pnl = calcScenarioPnl(pnlData, sc.spotChg, sc.ivChg);
+                const pnl = scenarios?.find(item => item.label === sc.label)?.pnlChange ?? null;
                 return (
                   <tr key={sc.label} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                     <td style={{ padding: '0.45rem 0.7rem', fontWeight: 600 }}>{sc.label}</td>
@@ -251,7 +250,7 @@ function StressPanel({ pnlData }) {
             </tbody>
           </table>
           <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-            * 基于 Delta 线性近似，实际盈亏因 Gamma / Vega 影响会有偏差
+            * 使用同一快照的合约 IV 重新估值，已计入买卖方向与合约数量；到期时间不变。仅含此处期权，不含正股、费用或成交滑点。缺少报价或 IV 时显示 —。
           </p>
         </div>
       )}
@@ -338,10 +337,10 @@ function CloseDialog({ pos, onClose, onConfirm }) {
 
 // ── 持仓卡片 ─────────────────────────────────────────────────────────────────
 
-function PositionCard({ pos, pnl, onDelete, onClose }) {
+function PositionCard({ pos, pnl, earningsDate, onDelete, onClose }) {
   const isSell = SELL_STRATEGIES.has(pos.strategy);
   const maxProfit = (pos.premium * pos.quantity * 100).toFixed(2);
-  const maxLoss = isSell
+  const maxLoss = pos.strategy === 'sell_call' ? null : isSell
     ? ((pos.strike - pos.premium) * pos.quantity * 100).toFixed(2)
     : (pos.premium * pos.quantity * 100).toFixed(2);
   const breakEven = isSell
@@ -352,12 +351,31 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
   const show50Alert  = isSell && pnl?.profitProgress >= 50;
   const showRollAlert = isSell && pnl?.profitProgress != null && pnl.profitProgress <= -100;
 
+  const isItm = isSell && pnl?.currentPrice != null && (
+    pos.strategy === 'sell_put' ? pnl.currentPrice < pos.strike : pnl.currentPrice > pos.strike
+  );
+  const earningsBeforeExpiry = earningsDate
+    && earningsDate >= today()
+    && earningsDate <= pos.expiration_date;
+
   return (
     <div className="glass-panel" style={{ padding: '1rem 1.25rem', position: 'relative' }}>
+      {/* ITM 被行权风险横幅 */}
+      {isItm && (
+        <div style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: '8px', padding: '0.4rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#fca5a5' }}>
+          🔔 已进入实值（现价 ${pnl.currentPrice} {pos.strategy === 'sell_put' ? '<' : '>'} 行权价 ${pos.strike.toFixed(2)}），临近到期有被行权风险
+        </div>
+      )}
+      {/* 财报在到期日前横幅 */}
+      {earningsBeforeExpiry && (
+        <div style={{ background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: '8px', padding: '0.4rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#60a5fa' }}>
+          📅 财报日 {earningsDate} 在到期日之前，留意财报波动对仓位的冲击
+        </div>
+      )}
       {/* 50% 利润提醒横幅 */}
       {show50Alert && (
         <div style={{ background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: '8px', padding: '0.4rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-          ⚡ 已达最大利润 {pnl.profitProgress.toFixed(0)}%，可考虑提前平仓锁定收益（50% 黄金法则）
+          权利金利润进度 {pnl.profitProgress.toFixed(0)}%（按来源平仓报价估算，未扣费用，请核对券商报价）
         </div>
       )}
       {/* 滚仓提醒横幅 */}
@@ -374,14 +392,14 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
               {pnl && !pnl.error && (
                 <span style={{ fontSize: '0.82rem', fontWeight: 700, color: pnlColor(pnl.unrealizedPnl) }}>
                   {pnl.unrealizedPnl >= 0 ? <TrendingUp size={13} style={{ display: 'inline', marginRight: 2 }} /> : <TrendingDown size={13} style={{ display: 'inline', marginRight: 2 }} />}
-                  {fmt$(pnl.unrealizedPnl)} ({pnl.unrealizedPnlPct >= 0 ? '+' : ''}{pnl.unrealizedPnlPct}%)
+                  {fmt$(pnl.unrealizedPnl)} {pnl.unrealizedPnlPct != null && `(${pnl.unrealizedPnlPct >= 0 ? '+' : ''}${pnl.unrealizedPnlPct}%)`}
                 </span>
               )}
             </div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{stratLabel}</div>
             {pnl?.currentPrice && (
               <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                现价 ${pnl.currentPrice}
+                标的报价 ${pnl.currentPrice}
               </div>
             )}
           </div>
@@ -390,10 +408,11 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
           {[
             { label: '行权价', value: `$${pos.strike.toFixed(2)}` },
             { label: '开仓权利金', value: `$${pos.premium.toFixed(2)}/股` },
+            { label: `平仓参考价${pnl?.markBasis ? `（${pnl.markBasis.toUpperCase()}）` : ''}`, value: pnl?.currentPremium != null ? `$${pnl.currentPremium.toFixed(2)}/股` : '—' },
             { label: '合约数', value: `${pos.quantity} 张` },
             { label: '盈亏平衡', value: `$${breakEven.toFixed(2)}`, tip: TIPS.breakEven },
-            { label: '最大获利', value: `$${maxProfit}`, color: '#10b981', tip: TIPS.maxProfit },
-            { label: '最大亏损', value: `$${maxLoss}`, color: '#ef4444', tip: TIPS.maxLoss },
+            { label: '最大获利', value: pos.strategy === 'buy_call' ? '无上限' : pos.strategy === 'buy_put' ? `$${((pos.strike - pos.premium) * pos.quantity * 100).toFixed(2)}` : `$${maxProfit}`, color: '#10b981', tip: TIPS.maxProfit },
+            { label: '最大亏损', value: maxLoss == null ? '裸卖 Call 无上限' : `$${maxLoss}`, color: '#ef4444', tip: TIPS.maxLoss },
             { label: '到期日', value: pos.expiration_date },
           ].map(({ label, value, color, tip }) => (
             <div key={label} style={{ textAlign: 'center' }}>
@@ -411,7 +430,7 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '2px' }}>每日 Theta</div>
                   <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#f59e0b' }}>
-                    {isSell ? '+' : ''}{(Math.abs(pnl.theta) * pos.quantity * 100).toFixed(2)}/天
+                    {fmt$(pnl.positionTheta)}/天
                   </div>
                 </div>
               )}
@@ -459,6 +478,14 @@ function PositionCard({ pos, pnl, onDelete, onClose }) {
         </div>
       )}
 
+      <div style={{ marginTop: '0.7rem', fontSize: '0.75rem', color: pnl?.error ? '#fca5a5' : 'var(--text-secondary)', lineHeight: 1.7 }}>
+        {pnl?.error || (!pnl ? '等待行情更新；尚无可用估值。' : <>
+          数据源：{pnl.source === 'cboe' ? 'CBOE 延迟行情' : 'Yahoo Finance（报价时间未知）'} ·
+          合约 Bid ${pnl.bid?.toFixed(2)} / Ask ${pnl.ask?.toFixed(2)} ·
+          行情时间：{pnl.quoteAsOf || '来源未提供'}（来源原始时间戳，未标时区则不推定）
+          <br />卖方按 Ask 买回、买方按 Bid 卖出估算盈亏，未扣费用。刷新成功不代表报价实时；休市时可能是最近收盘数据。
+        </>)}
+      </div>
       {pos.notes && (
         <div style={{ marginTop: '0.6rem', fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
           📝 {pos.notes}
@@ -544,20 +571,82 @@ function exportPositionsCsv(positions) {
 
 // ── 主组件 ───────────────────────────────────────────────────────────────────
 
+// ── 正股持仓 ─────────────────────────────────────────────────────────────────
+
+function StockHoldings({ stocks, onDelete }) {
+  const [open, setOpen] = useState(true);
+  if (stocks.length === 0) return null;
+
+  const totalMV = stocks.reduce((s, r) => s + (r.market_value || 0), 0);
+  const totalPnl = stocks.reduce((s, r) => s + (r.pnl || 0), 0);
+
+  return (
+    <div className="glass-panel" style={{ padding: '1.25rem', marginTop: '1.5rem' }}>
+      <div onClick={() => setOpen(v => !v)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: open ? '1rem' : 0 }}>
+        <h3 style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />} 📦 正股持仓
+          <span style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: '0.8rem' }}>{stocks.length} 只</span>
+        </h3>
+        <span style={{ fontSize: '0.85rem', color: totalPnl >= 0 ? '#10b981' : '#ef4444' }}>
+          市值 ${totalMV.toLocaleString()} · 浮盈 {totalPnl >= 0 ? '+' : ''}${totalPnl.toLocaleString()}
+        </span>
+      </div>
+      {open && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+            <thead>
+              <tr style={{ color: 'var(--text-secondary)', textAlign: 'right', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                <th style={{ textAlign: 'left', padding: '0.4rem 0.6rem' }}>代码</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>股数</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>成本价</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>现价</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>市值</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}>盈亏</th>
+                <th style={{ padding: '0.4rem 0.6rem' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {stocks.map(r => (
+                <tr key={r.id} style={{ textAlign: 'right', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <td style={{ textAlign: 'left', padding: '0.4rem 0.6rem', fontWeight: 600 }}>{r.symbol}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>{r.quantity}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>${r.avg_price?.toFixed(2)}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>{r.current_price != null ? `$${r.current_price.toFixed(2)}` : '—'}</td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>{r.market_value != null ? `$${r.market_value.toLocaleString()}` : '—'}</td>
+                  <td style={{ padding: '0.4rem 0.6rem', color: (r.pnl ?? 0) >= 0 ? '#10b981' : '#ef4444' }}>
+                    {r.pnl != null ? `${r.pnl >= 0 ? '+' : ''}$${r.pnl.toLocaleString()} (${r.pnl_pct >= 0 ? '+' : ''}${r.pnl_pct}%)` : '—'}
+                  </td>
+                  <td style={{ padding: '0.4rem 0.6rem' }}>
+                    <button onClick={() => onDelete(r.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5' }}><Trash2 size={14} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PositionsTab() {
   const [allPositions, setAllPositions] = useState([]);
   const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
-  const [pnlMap, setPnlMap] = useState({});
-  const [greeks, setGreeks] = useState(null);
-  const [pnlLoading, setPnlLoading] = useState(false);
   const [closingPos, setClosingPos] = useState(null);
-  const pnlTimerRef = useRef(null);
+  const [stocks, setStocks] = useState([]);
+  const [earningsMap, setEarningsMap] = useState({});
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef(null);
 
   const openPositions = allPositions.filter(p => p.status === 'open' || !p.status);
   const closedPositions = allPositions.filter(p => p.status === 'closed');
+  const positionKey = JSON.stringify(openPositions.map(p => [p.id, p.symbol, p.strategy, p.strike, p.premium, p.quantity, p.expiration_date]));
+  const { snapshot, loading: pnlLoading, error: quoteError, refresh: loadPnl } = usePortfolioSnapshot(positionKey);
+  const pnlMap = Object.fromEntries((snapshot?.data || []).map(row => [row.id, row]));
+  const greeks = snapshot?.greeks;
 
   const load = async () => {
     try {
@@ -568,35 +657,60 @@ export default function PositionsTab() {
     }
   };
 
-  const loadPnl = async () => {
-    if (pnlLoading) return;
-    setPnlLoading(true);
+  const loadStocks = async () => {
     try {
-      const [pnlRes, greeksRes] = await Promise.all([
-        apiFetch('GET', '/api/portfolio/pnl'),
-        apiFetch('GET', '/api/portfolio/greeks'),
-      ]);
-      const map = {};
-      for (const row of (pnlRes.data || [])) map[row.id] = row;
-      setPnlMap(map);
-      setGreeks(greeksRes.data || null);
+      const res = await apiFetch('GET', '/api/stocks');
+      setStocks(res.data || []);
     } catch {
-      // PnL 获取失败不阻断主界面
+      // 正股加载失败不阻断主界面
+    }
+  };
+
+  const loadEarningsAlerts = async () => {
+    try {
+      const res = await apiFetch('GET', '/api/positions/earnings-alerts');
+      setEarningsMap(res.data || {});
+    } catch {
+      // 财报提醒加载失败不阻断主界面
+    }
+  };
+
+  const handleImport = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const content = await file.text();
+      const res = await apiFetch('POST', '/api/positions/import-tiger', { content });
+      await Promise.all([load(), loadStocks()]);
+      alert(`导入完成：期权 ${res.options_imported} 张、正股 ${res.stocks_imported} 只、跳过 ${res.skipped} 行。`);
+    } catch (e) {
+      setError(`导入失败：${e.message}`);
     } finally {
-      setPnlLoading(false);
+      setImporting(false);
+    }
+  };
+
+  const handleDeleteStock = async (id) => {
+    if (!confirm('确定要删除这条正股记录吗？')) return;
+    try {
+      await apiFetch('DELETE', `/api/stocks/${id}`);
+      await loadStocks();
+    } catch (e) {
+      setError(e.message);
     }
   };
 
   useEffect(() => {
-    load();
+    const initial = setTimeout(() => {
+      load();
+      loadStocks();
+      loadEarningsAlerts();
+    }, 0);
+    return () => clearTimeout(initial);
   }, []);
-
-  useEffect(() => {
-    if (openPositions.length === 0) return;
-    loadPnl();
-    pnlTimerRef.current = setInterval(loadPnl, 120_000);
-    return () => clearInterval(pnlTimerRef.current);
-  }, [openPositions.length]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -654,11 +768,15 @@ export default function PositionsTab() {
         <div>
           <h2 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '0.2rem' }}>持仓追踪</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            实时盈亏 · 平仓记录 · Greeks 监控
+            行情估值 · 平仓记录 · Greeks 监控
             {pnlLoading && <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#60a5fa' }}>⟳ 刷新中…</span>}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button onClick={() => loadPnl(true)} disabled={pnlLoading || openPositions.length === 0}
+            style={{ padding: '0.5rem 0.85rem', borderRadius: 8, border: '1px solid rgba(96,165,250,0.4)', background: 'rgba(59,130,246,0.12)', color: '#93c5fd', cursor: 'pointer' }}>
+            {pnlLoading ? '刷新行情中…' : '刷新行情'}
+          </button>
           {allPositions.length > 0 && (
             <button
               onClick={() => exportPositionsCsv(allPositions)}
@@ -671,6 +789,18 @@ export default function PositionsTab() {
               ↓ 导出 CSV
             </button>
           )}
+          <input ref={fileInputRef} type="file" accept=".csv" onChange={handleImport} style={{ display: 'none' }} />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
+              color: 'var(--text-secondary)', padding: '0.5rem 0.85rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem',
+            }}
+          >
+            <Upload size={14} /> {importing ? '导入中…' : '导入老虎 CSV'}
+          </button>
           <button
             onClick={() => setShowForm(v => !v)}
             style={{
@@ -685,6 +815,11 @@ export default function PositionsTab() {
       </div>
 
       {error && <ErrorBox message={error} />}
+      {quoteError && <ErrorBox message={`行情刷新失败：${quoteError}。旧估值已隐藏，请重试。`} />}
+      {openPositions.length > 0 && <p role="status" style={{ marginBottom: '1rem', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+        {snapshot?.fetchedAt ? `最近获取：${new Date(snapshot.fetchedAt).toLocaleString()}（本地时间）。` : '尚无成功获取的行情快照。'}
+        每 2 分钟自动更新，回到页面时重新获取。行情源可能延迟；此处显示的仓位来自手动录入 / CSV，不会自动同步 Tiger 的成交或持仓变更。
+      </p>}
 
       {/* 汇总条 */}
       {allPositions.length > 0 && (
@@ -754,29 +889,37 @@ export default function PositionsTab() {
       )}
 
       {/* 持仓列表 */}
-      {openPositions.length === 0 && closedPositions.length === 0 ? (
+      {openPositions.length === 0 && closedPositions.length === 0 && stocks.length === 0 ? (
         <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
-          <p style={{ color: 'var(--text-secondary)' }}>还没有任何持仓记录，点击「新增持仓」开始追踪。</p>
+          <p style={{ color: 'var(--text-secondary)' }}>还没有任何持仓记录，点击「新增持仓」或「导入老虎 CSV」开始追踪。</p>
         </div>
       ) : (
         <>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {openPositions.map(pos => (
-              <PositionCard
-                key={pos.id}
-                pos={pos}
-                pnl={pnlMap[pos.id]}
-                onDelete={handleDelete}
-                onClose={setClosingPos}
-              />
-            ))}
-          </div>
+          {(openPositions.length > 0 || closedPositions.length > 0) && (
+            <>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {openPositions.map(pos => (
+                  <PositionCard
+                    key={pos.id}
+                    pos={pos}
+                    pnl={pnlMap[pos.id]}
+                    earningsDate={earningsMap[pos.symbol]}
+                    onDelete={handleDelete}
+                    onClose={setClosingPos}
+                  />
+                ))}
+              </div>
 
-          {/* 压力测试 */}
-          <StressPanel pnlData={Object.values(pnlMap)} />
+              {/* 压力测试 */}
+              <StressPanel pnlData={Object.values(pnlMap)} scenarios={snapshot?.scenarios} />
 
-          {/* 已平仓记录 */}
-          <ClosedSection positions={closedPositions} />
+              {/* 已平仓记录 */}
+              <ClosedSection positions={closedPositions} />
+            </>
+          )}
+
+          {/* 正股持仓 */}
+          <StockHoldings stocks={stocks} onDelete={handleDeleteStock} />
         </>
       )}
 

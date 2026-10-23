@@ -2,15 +2,64 @@
 /api/scan  —  期权扫描主接口
 """
 import math
+import os
 from datetime import datetime
+from typing import Literal
 
 import pandas as pd
+import requests
 import yfinance as yf
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from services import cache as cache_svc
+from services import cache as cache_svc, cboe
 from services.scanner import scan_options, _calc_empirical_win_rate
 from services.greeks import calc_black_scholes
+
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "")
+
+
+def _fmp_history(symbol: str) -> pd.DataFrame:
+    """从 FMP 获取约 2 年日线数据（504 交易日），转换为与 yfinance 兼容的 DataFrame。"""
+    if not FMP_API_KEY:
+        return pd.DataFrame()
+    try:
+        url = (
+            f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}"
+            f"?timeseries=504&apikey={FMP_API_KEY}"
+        )
+        resp = requests.get(url, timeout=20)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+        data = resp.json().get("historical", [])
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+        df = df.rename(columns={
+            "close": "Close", "open": "Open",
+            "high": "High", "low": "Low", "volume": "Volume",
+        })
+        return df[["Open", "High", "Low", "Close", "Volume"]]
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fmp_news(symbol: str) -> list[dict]:
+    """从 FMP 获取最新 10 条新闻。"""
+    if not FMP_API_KEY:
+        return []
+    try:
+        url = (
+            f"https://financialmodelingprep.com/api/v3/stock_news"
+            f"?tickers={symbol}&limit=10&apikey={FMP_API_KEY}"
+        )
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        return resp.json()
+    except Exception:
+        return []
 
 router = APIRouter()
 
@@ -25,28 +74,78 @@ STRATEGY_LABELS = {
 @router.get("/api/scan")
 def scan(
     strategies: str = Query(default="sell_put", description="逗号分隔：sell_put,buy_call,sell_call,buy_put"),
-    dte_min: int = Query(default=7, ge=1),
-    dte_max: int = Query(default=60, le=365),
+    dte_min: int = Query(default=7, ge=1, le=365),
+    dte_max: int = Query(default=60, ge=1, le=365),
     min_iv_rank: float = Query(default=0, ge=0, le=100),
+    relaxed: bool = Query(default=False, description="放宽筛选门槛（市场平静期使用）"),
     force_refresh: bool = Query(default=False),
+    profile: Literal["simple", "advanced"] = "advanced",
+    fee_per_contract: float = Query(default=0.65, ge=0, le=100, allow_inf_nan=False),
+    slippage_per_share: float = Query(default=0.01, ge=0, le=10, allow_inf_nan=False),
+    max_capital: float = Query(default=0, ge=0, allow_inf_nan=False),
 ):
-    strategy_list = [s.strip() for s in strategies.split(",") if s.strip()]
-    cache_key = f"scan:{'|'.join(sorted(strategy_list))}:{dte_min}:{dte_max}:{min_iv_rank}"
+    strategy_list = sorted({s.strip() for s in strategies.split(",") if s.strip()})
+    if not strategy_list or any(s not in STRATEGY_LABELS for s in strategy_list):
+        raise HTTPException(422, "请选择有效策略")
+    if dte_min > dte_max:
+        raise HTTPException(422, "最短到期天数不能大于最长到期天数")
+    if profile == "simple":
+        if strategy_list != ["sell_put"] or relaxed or min_iv_rank != 0:
+            raise HTTPException(422, "简单模式仅支持现金担保 Put，不放宽筛选或使用 IV Rank")
+        dte_min, dte_max = max(30, dte_min), min(45, dte_max)
+        if dte_min > dte_max:
+            raise HTTPException(422, "简单模式到期范围为 30–45 天")
+
+    def _key(rx: bool) -> str:
+        mode = "rx" if rx else "std"
+        return (f"scan:v2:{profile}:{'|'.join(strategy_list)}:{dte_min}:{dte_max}:"
+                f"{float(min_iv_rank)}:{mode}:{float(fee_per_contract)}:"
+                f"{float(slippage_per_share)}:{float(max_capital)}")
+
+    def _is_stale(rows) -> bool:
+        return bool(rows) and all(r.get("stale") for r in rows)
+
+    def _is_best_effort(rows) -> bool:
+        return bool(rows) and all(r.get("bestEffort") for r in rows)
+
+    def _dominant_source(rows) -> str | None:
+        srcs = [r.get("source") for r in rows if r.get("source")]
+        return max(set(srcs), key=srcs.count) if srcs else None
+
+    def _resp(rows, *, cached: bool, relaxed_flag: bool) -> dict:
+        return {
+            "data": rows,
+            "cached": cached,
+            "relaxed": relaxed_flag,
+            "stale": _is_stale(rows),
+            "bestEffort": _is_best_effort(rows),
+            "source": _dominant_source(rows),
+            "profile": profile,
+            "noTrade": not rows,
+        }
 
     if not force_refresh:
-        cached = cache_svc.get(cache_key, ttl_seconds=3600)
+        cached = cache_svc.get(_key(relaxed), ttl_seconds=300 if profile == "simple" else 3600)
+        # 收盘快照缓存只信 5 分钟，开盘后尽快换成实时数据
+        if cached is not None and _is_stale(cached):
+            cached = cache_svc.get(_key(relaxed), ttl_seconds=300)
         if cached is not None:
-            return {"data": cached, "cached": True}
+            return _resp(cached, cached=True, relaxed_flag=relaxed)
 
     results = scan_options(
         strategies=strategy_list,
         dte_min=dte_min,
         dte_max=dte_max,
         min_iv_rank=min_iv_rank,
+        relaxed=relaxed,
+        profile=profile,
+        fee_per_contract=fee_per_contract,
+        slippage_per_share=slippage_per_share,
+        max_capital=max_capital,
     )
+    cache_svc.set(_key(relaxed), results)
 
-    cache_svc.set(cache_key, results)
-    return {"data": results, "cached": False}
+    return _resp(results, cached=False, relaxed_flag=relaxed)
 
 
 @router.get("/api/analyze/{symbol}")
@@ -60,55 +159,64 @@ def analyze_option(
     """
     单条期权的深度分析：历史验证 + 价格图表 + 新闻情绪 + Greeks
     """
+    from fastapi import HTTPException
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-    ticker = yf.Ticker(symbol)
-    history = ticker.history(period="2y")
+    # ── 历史数据：优先 FMP，fallback yfinance ──
+    history = _fmp_history(symbol)
     if history.empty:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="找不到历史数据")
+        try:
+            history = yf.Ticker(symbol).history(period="2y")
+        except Exception:
+            history = pd.DataFrame()
+    if history.empty:
+        raise HTTPException(status_code=404, detail="找不到历史数据，请稍后重试")
 
     # ── 历史回测 ──
-    win_rate, total, safe, triggered = _calc_empirical_win_rate(
-        history, dte, current_price, strike
-    )
+    win_stats = _calc_empirical_win_rate(history, dte, current_price, strike)
+    win_rate = win_stats["win_rate"]
+    total = win_stats["total_windows"]
+    safe = win_stats["safe_windows"]
+    triggered = win_stats["triggered_events"]
 
-    # ── 价格图表（含 ±1σ 预期区间标注）──
+    # ── 价格图表 ──
     chart_data = [
         {"date": d.strftime("%Y-%m-%d"), "price": round(float(row["Close"]), 2)}
         for d, row in history.iterrows()
     ]
 
-    # ── 新闻情绪 ──
+    # ── 新闻情绪：优先 FMP，fallback yfinance ──
     AUTHORITATIVE = {
-        "Bloomberg", "Reuters", "The Wall Street Journal", "Yahoo Finance",
-        "CNBC", "Financial Times", "MarketWatch", "Barrons", "Forbes",
+        "Bloomberg", "Reuters", "The Wall Street Journal",
+        "CNBC", "Financial Times", "MarketWatch", "Barron's", "Forbes",
     }
     analyzer = SentimentIntensityAnalyzer()
-    raw_news = ticker.news or []
     articles = []
 
-    for item in raw_news:
-        content = item.get("content", {})
-        if content:
-            publisher = content.get("provider", {}).get("displayName", "")
-            title = content.get("title", "")
-            link = content.get("canonicalUrl", {}).get("url", "")
-        else:
-            publisher = item.get("publisher", "")
+    fmp_news = _fmp_news(symbol)
+    if fmp_news:
+        for item in fmp_news:
             title = item.get("title", "")
-            link = item.get("link", "")
-
-        if not title:
-            continue
-
-        score = analyzer.polarity_scores(title)["compound"]
-        articles.append({
-            "title": title,
-            "publisher": publisher,
-            "link": link,
-            "sentimentScore": score,
-        })
+            publisher = item.get("site", "")
+            link = item.get("url", "")
+            if not title:
+                continue
+            score = analyzer.polarity_scores(title)["compound"]
+            articles.append({"title": title, "publisher": publisher, "link": link, "sentimentScore": score})
+    else:
+        try:
+            raw_news = yf.Ticker(symbol).news or []
+            for item in raw_news:
+                content = item.get("content", {})
+                publisher = content.get("provider", {}).get("displayName", "") if content else item.get("publisher", "")
+                title = content.get("title", "") if content else item.get("title", "")
+                link = content.get("canonicalUrl", {}).get("url", "") if content else item.get("link", "")
+                if not title:
+                    continue
+                score = analyzer.polarity_scores(title)["compound"]
+                articles.append({"title": title, "publisher": publisher, "link": link, "sentimentScore": score})
+        except Exception:
+            pass
 
     articles.sort(key=lambda x: 0 if x["publisher"] in AUTHORITATIVE else 1)
     top_articles = articles[:5]
@@ -137,9 +245,9 @@ def analyze_option(
             "totalWindows": total,
             "safeWindows": safe,
             "triggeredWindows": total - safe,
-            "winRate": round(win_rate * 100, 2),
+            "winRate": round(win_rate * 100, 2) if win_rate is not None else None,
             "triggeredEvents": triggered,
-        },
+        } if strategy == "sell_put" else None,
         "chartData": chart_data,
         "newsAnalysis": {
             "overallSentiment": overall_sentiment,
@@ -157,63 +265,64 @@ def simulate_roll(
     dte: int,
 ):
     """
-    模拟 Rolling Out 备用计划。
-    假设股票在到期时跌破行权价 2% (即 S = strike * 0.98)。
-    平仓成本 (Buy To Close) 约等于内在价值 (strike - S) = strike * 0.02。
-    寻找 30-60 天后到期的期权，找到能覆盖此平仓成本的新行权价。
+    模拟 Roll Down & Out 备用计划（数据走 CBOE）。
+
+    平仓成本 (Buy To Close) 取当前持仓 put 的真实市价（bid/ask 中间价），
+    再在比当前 DTE 多 20~60 天的远期里，找能覆盖该成本、行权价更低的新 put。
     """
-    import yfinance as yf
-    from datetime import datetime
-    
-    ticker = yf.Ticker(symbol)
+    data = cboe.fetch(symbol)
+    chains = (data or {}).get("chains")
+    if not chains:
+        return {"status": "error", "message": "无法获取期权链数据（CBOE 暂不可用）。"}
+
     today = datetime.now()
-    exp_dates = ticker.options
-    
-    # 模拟平仓成本 (假设到期时跌破行权价2%，时间价值几乎为0)
-    simulated_stock_price = strike * 0.98
-    btc_cost = strike - simulated_stock_price
-    
-    # 我们希望找到一个 Net Credit
-    target_premium = btc_cost + (premium * 0.2) # 尝试多赚 20% 原权利金
-    
+
+    def _exp_dte(exp: str) -> int:
+        return (datetime.strptime(exp, "%Y-%m-%d") - today).days
+
+    def _mid(row) -> float:
+        bid, ask = float(row["bid"]), float(row["ask"])
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        return float(row["lastPrice"])
+
+    def _nearest_strike(df, target: float):
+        if df.empty:
+            return None
+        return df.loc[(df["strike"] - target).abs().idxmin()]
+
+    # 平仓成本 = 当前这张 put 的实时市价（找最接近持仓到期日的那条链）
+    cur_exp = min(chains, key=lambda e: abs(_exp_dte(e) - dte))
+    cur_row = _nearest_strike(chains[cur_exp]["puts"], strike)
+    btc_cost = _mid(cur_row) if cur_row is not None else strike * 0.02
+
+    target_premium = btc_cost + premium * 0.2  # 滚后还想多赚 20% 原权利金
+
     best_roll = None
-    
-    for date_str in exp_dates:
-        roll_dte = (datetime.strptime(date_str, "%Y-%m-%d") - today).days
-        # 寻找比当前 DTE 多 30~60 天的远期合约
-        if dte + 20 <= roll_dte <= dte + 60:
-            try:
-                chain = ticker.option_chain(date_str)
-                puts = chain.puts
-                
-                # 寻找能覆盖 target_premium 的最低行权价
-                # 优先满足：Premium >= target_premium 且 Strike <= current_strike
-                valid_puts = puts[
-                    (puts['lastPrice'] >= target_premium) & 
-                    (puts['strike'] <= strike)
-                ]
-                
-                if not valid_puts.empty:
-                    # 取行权价最低的那个 (最安全)
-                    best_put = valid_puts.sort_values(by='strike', ascending=True).iloc[0]
-                    
-                    if best_roll is None or best_put['strike'] < best_roll['strike']:
-                        best_roll = {
-                            "roll_date": date_str,
-                            "roll_dte": roll_dte,
-                            "roll_strike": float(best_put['strike']),
-                            "roll_premium": float(best_put['lastPrice']),
-                            "btc_cost": round(btc_cost, 2),
-                            "net_credit": round(float(best_put['lastPrice']) - btc_cost, 2)
-                        }
-            except Exception:
-                continue
-                
+    for exp, slot in chains.items():
+        roll_dte = _exp_dte(exp)
+        if not (dte + 20 <= roll_dte <= dte + 60):
+            continue
+        puts = slot["puts"]
+        if puts.empty:
+            continue
+        puts = puts.assign(mid=puts.apply(_mid, axis=1))
+        valid = puts[(puts["mid"] >= target_premium) & (puts["strike"] <= strike)]
+        if valid.empty:
+            continue
+        best = valid.sort_values(by="strike").iloc[0]  # 行权价最低 = 最安全
+        if best_roll is None or best["strike"] < best_roll["roll_strike"]:
+            best_roll = {
+                "roll_date": exp,
+                "roll_dte": roll_dte,
+                "roll_strike": float(best["strike"]),
+                "roll_premium": round(float(best["mid"]), 2),
+                "btc_cost": round(btc_cost, 2),
+                "net_credit": round(float(best["mid"]) - btc_cost, 2),
+            }
+
     if not best_roll:
-        return {"status": "error", "message": "在当前保守波动率下，难以找到理想的向下延期 (Roll Down & Out) 机会。建议接盘做 Wheel Strategy。"}
-        
-    return {
-        "status": "success",
-        "data": best_roll
-    }
+        return {"status": "error", "message": "在当前波动率下，难以找到理想的向下延期 (Roll Down & Out) 机会。建议接盘做 Wheel Strategy。"}
+
+    return {"status": "success", "data": best_roll}
 

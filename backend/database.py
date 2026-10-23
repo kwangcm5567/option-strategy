@@ -9,8 +9,11 @@ DB_PATH = Path(__file__).parent / "positions.db"
 
 
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    # timeout：写锁被占用时最多等 10s 再报错（替代立刻 "database is locked"）
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row   # 让查询结果可以用列名访问
+    # WAL：读写不互斥，扫描并发期间其它请求不再被锁死
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -34,6 +37,27 @@ def init_db():
                 exit_date       TEXT,
                 realized_pnl    REAL,
                 close_reason    TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_holdings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol      TEXT    NOT NULL UNIQUE,
+                quantity    INTEGER NOT NULL,
+                avg_price   REAL    NOT NULL,
+                notes       TEXT,
+                created_at  TEXT    DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS account_snapshots (
+                id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+                imported_at               TEXT    NOT NULL DEFAULT (datetime('now')),
+                net_asset_value           REAL    NOT NULL,
+                total_market_value        REAL    NOT NULL,
+                total_margin_requirement  REAL    NOT NULL,
+                implied_margin_loan       REAL    NOT NULL,
+                leverage                  REAL
             )
         """)
         # 为旧表补齐新列（迁移兼容）
