@@ -8,6 +8,7 @@ import logging
 import random
 import threading
 import time
+from datetime import datetime, timezone
 
 import pandas as pd
 import requests
@@ -76,7 +77,7 @@ def _get_json_url(url: str, symbol: str) -> dict | None:
     return None
 
 
-def fetch(symbol: str) -> dict | None:
+def fetch(symbol: str, force_refresh: bool = False) -> dict | None:
     """成功返回 {current_price, prev_close, change_pct, iv30, chains}；失败返回 None。
 
     chains: {expiry: {"puts": DataFrame, "calls": DataFrame}}。
@@ -84,7 +85,7 @@ def fetch(symbol: str) -> dict | None:
     now = time.time()
     with _cache_lock:
         hit = _cache.get(symbol)
-        if hit and now - hit[0] < _CACHE_TTL:
+        if not force_refresh and hit and now - hit[0] < _CACHE_TTL:
             return hit[1]
 
     result = _build(symbol)
@@ -140,6 +141,8 @@ def _build(symbol: str) -> dict | None:
             "change_pct": round(_f(data.get("price_change_percent")), 2),
             "iv30": round(_f(data.get("iv30")), 1) or None,
             "chains": chains,
+            "quote_as_of": payload.get("timestamp") or data.get("timestamp"),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
         logger.warning("[cboe] %s 失败: %s", symbol, e)
