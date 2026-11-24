@@ -17,6 +17,11 @@ def get(key: str, ttl_seconds: int = 3600):
     return entry["data"]
 
 
+def peek(key: str) -> dict | None:
+    """返回原始条目 {"data", "ts"}，不论是否过期。"""
+    return _store.get(key)
+
+
 def set(key: str, data):
     """写入缓存，记录时间戳。"""
     _store[key] = {"data": data, "ts": datetime.now()}

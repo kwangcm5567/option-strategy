@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { RefreshCw, ArrowRight } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
+import { useRefreshPolling } from '../../hooks/useRefreshPolling';
 import './SimpleScanner.css';
 
 /** @param {number} value */
@@ -10,18 +11,22 @@ const dollars = (value) => new Intl.NumberFormat('en-US', {
 
 /** @param {{ endpoint: string }} props */
 function Results({ endpoint }) {
-  const { data, loading, error, refetch } = useApi(endpoint, { timeout: 180_000 });
+  const { data, loading, error, refetch } = useApi(endpoint, { timeout: 300_000 });
+  useRefreshPolling(data, error, endpoint, refetch);
+  const busy = loading || (!!data?.refreshing && !error);
+  const scanningCold = busy && !data?.data?.length;
   return (
     <section aria-label="简单模式结果" aria-busy={loading}>
       <div className="simple-results-heading">
         <h3>候选观察清单</h3>
-        <button type="button" onClick={() => refetch(`${endpoint}&force_refresh=true`)} disabled={loading}>
-          <RefreshCw size={14} /> {loading ? '扫描中…' : '刷新报价'}
+        <button type="button" onClick={() => refetch(`${endpoint}&force_refresh=true`)} disabled={busy}>
+          <RefreshCw size={14} /> {busy ? '扫描中…' : '刷新报价'}
         </button>
       </div>
-      {loading && <p role="status" className="simple-notice">正在检查 3 只 ETF 的报价与成本，请稍候…</p>}
+      {scanningCold && <p role="status" className="simple-notice">正在检查 3 只 ETF 的报价与成本，首次扫描约需 1–3 分钟，完成后自动显示…</p>}
+      {!scanningCold && busy && <p role="status" className="simple-notice">正在后台刷新报价，先显示上次结果，完成后自动更新…</p>}
       {error && <p role="alert" className="simple-notice">扫描失败：{error}。请重试，当前没有可用结果。</p>}
-      {!loading && !error && data && (
+      {!busy && !error && data && (
         <>
           {data.data.length === 0 ? (
             <div className="simple-empty" role="status">

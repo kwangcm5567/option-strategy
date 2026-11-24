@@ -10,15 +10,17 @@ export function useApi(endpoint, { timeout = 120_000 } = {}) {
   const abortRef    = useRef(null);
   const loadingRef  = useRef(!!endpoint); // ref 版本供事件监听器读取
 
-  const fetchData = useCallback(async (url) => {
+  const fetchData = useCallback(async (url, { silent = false } = {}) => {
     if (!url) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setLoading(true);
-    loadingRef.current = true;
-    setError(null);
+    if (!silent) {
+      setLoading(true);
+      loadingRef.current = true;
+      setError(null);
+    }
 
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     try {
@@ -29,7 +31,10 @@ export function useApi(endpoint, { timeout = 120_000 } = {}) {
         throw new Error(body.detail || `服务器返回错误 ${res.status}`);
       }
       const json = await res.json();
-      if (abortRef.current === controller && !controller.signal.aborted) setData(json);
+      if (abortRef.current === controller && !controller.signal.aborted) {
+        setData(json);
+        setError(null);
+      }
     } catch (err) {
       clearTimeout(timeoutId);
       if (abortRef.current !== controller) return;
@@ -39,7 +44,7 @@ export function useApi(endpoint, { timeout = 120_000 } = {}) {
         setError(err.message);
       }
     } finally {
-      if (abortRef.current === controller) {
+      if (abortRef.current === controller && !silent) {
         setLoading(false);
         loadingRef.current = false;
       }
@@ -69,8 +74,8 @@ export function useApi(endpoint, { timeout = 120_000 } = {}) {
     };
   }, [endpoint, fetchData]);
 
-  const refetch = useCallback((overrideUrl) => {
-    fetchData(overrideUrl || endpoint);
+  const refetch = useCallback((overrideUrl, options) => {
+    fetchData(overrideUrl || endpoint, options);
   }, [endpoint, fetchData]);
 
   return { data, loading, error, refetch };

@@ -1,5 +1,6 @@
 """Scanner regressions, using deterministic quotes instead of live market data."""
 from datetime import datetime
+import threading
 from unittest.mock import Mock
 
 import pandas as pd
@@ -112,19 +113,30 @@ def test_budget_filter_runs_before_selecting_one_contract_per_symbol(monkeypatch
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(cache, "_store", {})
+    monkeypatch.setattr(route, "_refreshing", set())
+    monkeypatch.setattr(route, "_refresh_errors", {})
     app = FastAPI()
     app.include_router(route.router)
     return TestClient(app)
+
+
+def settle() -> None:
+    for _ in range(100):
+        if not route._refreshing:
+            return
+        threading.Event().wait(0.02)
+    raise AssertionError("background scan did not finish")
 
 
 def test_empty_scan_never_relaxes_and_remains_empty_in_cache(client, monkeypatch):
     scan = Mock(return_value=[])
     monkeypatch.setattr(route, "scan_options", scan)
     first = client.get("/api/scan").json()
+    settle()
     second = client.get("/api/scan").json()
     assert first["data"] == second["data"] == []
-    assert first["noTrade"] and not first["relaxed"] and not first["bestEffort"]
-    assert second["cached"]
+    assert second["noTrade"] and not second["relaxed"] and not second["bestEffort"]
+    assert second["cached"] and not second["refreshing"]
     scan.assert_called_once()
     assert scan.call_args.kwargs["relaxed"] is False
 
@@ -148,6 +160,7 @@ def test_cache_separates_profile_costs_and_cash_budget(client, monkeypatch):
     for params in ["", "profile=simple", "profile=simple&fee_per_contract=1",
                    "profile=simple&slippage_per_share=0.1", "profile=simple&max_capital=1000"]:
         assert client.get(f"/api/scan?{params}").status_code == 200
+    settle()
     assert scan.call_count == 5
     client.get("/api/scan?profile=simple&max_capital=1000")
     assert scan.call_count == 5
@@ -157,7 +170,7 @@ def test_warmup_and_http_use_the_same_default_cache(client, monkeypatch):
     from services.warmup import _DEFAULTS
     scan = Mock(return_value=[])
     monkeypatch.setattr(route, "scan_options", scan)
-    route.scan(force_refresh=True, **_DEFAULTS)
+    route.run_scan(force_refresh=True, **_DEFAULTS)
     response = client.get("/api/scan?profile=simple&dte_min=30&dte_max=45")
     assert response.json()["cached"] is True
     scan.assert_called_once()
@@ -170,3 +183,86 @@ def test_advanced_quotes_use_trade_side_and_calendar_days(strategy, expected):
                                    best_effort=True)
     assert result["premium"] == expected
     assert result["dte"] == 30
+
+
+def test_cold_request_returns_immediately_and_polling_gets_result(client, monkeypatch):
+    release = threading.Event()
+
+    def slow_scan(**kwargs):
+        release.wait(5)
+        return [{"symbol": "NEW"}]
+
+    monkeypatch.setattr(route, "scan_options", slow_scan)
+    first = client.get("/api/scan").json()
+    assert first["data"] == [] and first["refreshing"] is True
+    assert client.get("/api/scan").json()["refreshing"] is True
+    release.set()
+    settle()
+    done = client.get("/api/scan").json()
+    assert done["data"] == [{"symbol": "NEW"}] and done["refreshing"] is False
+
+
+def test_force_refresh_serves_old_cache_while_rescanning_in_background(client, monkeypatch):
+    release = threading.Event()
+    scan = Mock(side_effect=[[{"symbol": "OLD"}], [{"symbol": "NEW"}]])
+
+    def slow_scan(**kwargs):
+        rows = scan(**kwargs)
+        if rows[0]["symbol"] == "NEW":
+            release.wait(5)
+        return rows
+
+    monkeypatch.setattr(route, "scan_options", slow_scan)
+    client.get("/api/scan")
+    settle()
+    assert client.get("/api/scan").json()["data"] == [{"symbol": "OLD"}]
+
+    forced = client.get("/api/scan?force_refresh=true").json()
+    assert forced["data"] == [{"symbol": "OLD"}] and forced["refreshing"] is True
+    polled = client.get("/api/scan").json()
+    assert polled["data"] == [{"symbol": "OLD"}]
+
+    release.set()
+    settle()
+    done = client.get("/api/scan").json()
+    assert done["data"] == [{"symbol": "NEW"}] and done["refreshing"] is False
+    assert scan.call_count == 2
+
+
+def test_http_request_during_warmup_does_not_start_second_scan(client, monkeypatch):
+    from services.warmup import _ADVANCED_DEFAULTS
+    started, release = threading.Event(), threading.Event()
+    scan = Mock(return_value=[{"symbol": "SPY"}])
+
+    def slow_scan(**kwargs):
+        started.set()
+        release.wait(5)
+        return scan(**kwargs)
+
+    monkeypatch.setattr(route, "scan_options", slow_scan)
+    warm = threading.Thread(target=route.run_scan, kwargs={"force_refresh": True, **_ADVANCED_DEFAULTS})
+    warm.start()
+    started.wait(5)
+    during = client.get("/api/scan").json()
+    assert during["refreshing"] is True and during["data"] == []
+    release.set()
+    warm.join(5)
+    assert client.get("/api/scan").json()["data"] == [{"symbol": "SPY"}]
+    scan.assert_called_once()
+
+
+def test_background_scan_failure_is_reported_once(client, monkeypatch):
+    monkeypatch.setattr(route, "scan_options", Mock(side_effect=RuntimeError("yahoo down")))
+    assert client.get("/api/scan").json()["refreshing"] is True
+    settle()
+    failed = client.get("/api/scan")
+    assert failed.status_code == 502 and "yahoo down" in failed.json()["detail"]
+
+
+def test_warmup_covers_advanced_default_cache(client, monkeypatch):
+    from services.warmup import _ADVANCED_DEFAULTS
+    scan = Mock(return_value=[])
+    monkeypatch.setattr(route, "scan_options", scan)
+    route.run_scan(force_refresh=True, **_ADVANCED_DEFAULTS)
+    assert client.get("/api/scan?strategies=sell_put&dte_min=7&dte_max=60&min_iv_rank=0").json()["cached"] is True
+    scan.assert_called_once()

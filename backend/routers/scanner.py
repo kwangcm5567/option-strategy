@@ -1,8 +1,10 @@
 """
 /api/scan  —  期权扫描主接口
 """
+import logging
 import math
 import os
+import threading
 from datetime import datetime
 from typing import Literal
 
@@ -61,6 +63,7 @@ def _fmp_news(symbol: str) -> list[dict]:
     except Exception:
         return []
 
+logger = logging.getLogger("scanner")
 router = APIRouter()
 
 STRATEGY_LABELS = {
@@ -69,6 +72,36 @@ STRATEGY_LABELS = {
     "sell_call": "卖出 Call（收权利金）",
     "buy_put": "买入 Put（看跌）",
 }
+
+
+_refresh_lock = threading.Lock()
+_refreshing: set[str] = set()
+_refresh_errors: dict[str, str] = {}
+
+
+def _claim(key: str) -> bool:
+    with _refresh_lock:
+        if key in _refreshing:
+            return False
+        _refreshing.add(key)
+        _refresh_errors.pop(key, None)
+        return True
+
+
+def _scan_claimed(key: str, params: dict) -> None:
+    try:
+        cache_svc.set(key, scan_options(**params))
+    except Exception as e:
+        logger.warning("[scan] 扫描失败 %s: %s", key, e)
+        _refresh_errors[key] = str(e) or type(e).__name__
+    finally:
+        with _refresh_lock:
+            _refreshing.discard(key)
+
+
+def _refresh_in_background(key: str, params: dict) -> None:
+    if _claim(key):
+        threading.Thread(target=_scan_claimed, args=(key, params), daemon=True).start()
 
 
 @router.get("/api/scan")
@@ -84,6 +117,25 @@ def scan(
     slippage_per_share: float = Query(default=0.01, ge=0, le=10, allow_inf_nan=False),
     max_capital: float = Query(default=0, ge=0, allow_inf_nan=False),
 ):
+    return run_scan(strategies, dte_min, dte_max, min_iv_rank, relaxed, force_refresh, profile,
+                    fee_per_contract, slippage_per_share, max_capital, background_refresh=True)
+
+
+def run_scan(
+    strategies: str = "sell_put",
+    dte_min: int = 7,
+    dte_max: int = 60,
+    min_iv_rank: float = 0,
+    relaxed: bool = False,
+    force_refresh: bool = False,
+    profile: str = "advanced",
+    fee_per_contract: float = 0.65,
+    slippage_per_share: float = 0.01,
+    max_capital: float = 0,
+    background_refresh: bool = False,
+) -> dict:
+    """background_refresh=True（HTTP）时缓存未命中不阻塞：立即返回旧结果或空列表并在后台扫描；
+    False（预热）时同步扫描。同一 key 同时只跑一次扫描。"""
     strategy_list = sorted({s.strip() for s in strategies.split(",") if s.strip()})
     if not strategy_list or any(s not in STRATEGY_LABELS for s in strategy_list):
         raise HTTPException(422, "请选择有效策略")
@@ -96,11 +148,13 @@ def scan(
         if dte_min > dte_max:
             raise HTTPException(422, "简单模式到期范围为 30–45 天")
 
-    def _key(rx: bool) -> str:
-        mode = "rx" if rx else "std"
-        return (f"scan:v2:{profile}:{'|'.join(strategy_list)}:{dte_min}:{dte_max}:"
-                f"{float(min_iv_rank)}:{mode}:{float(fee_per_contract)}:"
-                f"{float(slippage_per_share)}:{float(max_capital)}")
+    key = (f"scan:v2:{profile}:{'|'.join(strategy_list)}:{dte_min}:{dte_max}:"
+           f"{float(min_iv_rank)}:{'rx' if relaxed else 'std'}:{float(fee_per_contract)}:"
+           f"{float(slippage_per_share)}:{float(max_capital)}")
+    params = dict(strategies=strategy_list, dte_min=dte_min, dte_max=dte_max,
+                  min_iv_rank=min_iv_rank, relaxed=relaxed, profile=profile,
+                  fee_per_contract=fee_per_contract, slippage_per_share=slippage_per_share,
+                  max_capital=max_capital)
 
     def _is_stale(rows) -> bool:
         return bool(rows) and all(r.get("stale") for r in rows)
@@ -112,40 +166,48 @@ def scan(
         srcs = [r.get("source") for r in rows if r.get("source")]
         return max(set(srcs), key=srcs.count) if srcs else None
 
-    def _resp(rows, *, cached: bool, relaxed_flag: bool) -> dict:
+    def _resp(rows, *, cached: bool, updated_at: datetime, refreshing: bool = False) -> dict:
         return {
             "data": rows,
             "cached": cached,
-            "relaxed": relaxed_flag,
+            "relaxed": relaxed,
             "stale": _is_stale(rows),
             "bestEffort": _is_best_effort(rows),
             "source": _dominant_source(rows),
             "profile": profile,
             "noTrade": not rows,
+            "refreshing": refreshing,
+            "updatedAt": updated_at.isoformat(timespec="seconds"),
         }
 
-    if not force_refresh:
-        cached = cache_svc.get(_key(relaxed), ttl_seconds=300 if profile == "simple" else 3600)
-        # 收盘快照缓存只信 5 分钟，开盘后尽快换成实时数据
-        if cached is not None and _is_stale(cached):
-            cached = cache_svc.get(_key(relaxed), ttl_seconds=300)
-        if cached is not None:
-            return _resp(cached, cached=True, relaxed_flag=relaxed)
+    def _fresh(entry) -> bool:
+        ttl = 300 if profile == "simple" or _is_stale(entry["data"]) else 3600
+        return (datetime.now() - entry["ts"]).total_seconds() <= ttl
 
-    results = scan_options(
-        strategies=strategy_list,
-        dte_min=dte_min,
-        dte_max=dte_max,
-        min_iv_rank=min_iv_rank,
-        relaxed=relaxed,
-        profile=profile,
-        fee_per_contract=fee_per_contract,
-        slippage_per_share=slippage_per_share,
-        max_capital=max_capital,
-    )
-    cache_svc.set(_key(relaxed), results)
+    entry = cache_svc.peek(key)
+    if not force_refresh and entry is not None and _fresh(entry):
+        return _resp(entry["data"], cached=True, updated_at=entry["ts"])
 
-    return _resp(results, cached=False, relaxed_flag=relaxed)
+    if not background_refresh:
+        if not _claim(key):
+            rows = entry["data"] if entry is not None else []
+            return _resp(rows, cached=entry is not None,
+                         updated_at=entry["ts"] if entry else datetime.now(), refreshing=True)
+        _scan_claimed(key, params)
+        entry = cache_svc.peek(key)
+        if entry is None:
+            raise HTTPException(502, _refresh_errors.pop(key, "扫描失败"))
+        return _resp(entry["data"], cached=False, updated_at=entry["ts"])
+
+    if not force_refresh and key not in _refreshing and key in _refresh_errors:
+        raise HTTPException(502, f"扫描失败：{_refresh_errors.pop(key)}")
+
+    # 扫描耗时数分钟，不让 HTTP 请求挂着等：后台跑，先回旧结果（或空），前端轮询。
+    _refresh_in_background(key, params)
+    rows = entry["data"] if entry is not None else []
+    # 扫描可能在响应前就结束了；仍回 refreshing=True，让前端再拉一次取结果
+    return _resp(rows, cached=entry is not None, updated_at=entry["ts"] if entry else datetime.now(),
+                 refreshing=True)
 
 
 @router.get("/api/analyze/{symbol}")

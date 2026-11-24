@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { RefreshCw, Filter } from 'lucide-react';
 import { useApi } from '../../hooks/useApi';
+import { useRefreshPolling } from '../../hooks/useRefreshPolling';
 import { ErrorBox } from '../../components/ui/LoadingSpinner';
 import Tooltip from '../../components/ui/Tooltip';
 import OptionCard from './OptionCard';
@@ -50,7 +51,7 @@ function ScannerLoading() {
           正在扫描全市场期权…
         </p>
         <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-          首次扫描约需 <strong style={{ color: '#f59e0b' }}>60–120 秒</strong>，之后 1 小时内直接读缓存（秒开）
+          首次扫描约需 <strong style={{ color: '#f59e0b' }}>1–3 分钟</strong>，之后 1 小时内直接读缓存（秒开）
         </p>
       </div>
       <div style={{ width: '100%', maxWidth: 420 }}>
@@ -135,7 +136,8 @@ function AdvancedScanner() {
   };
 
   const endpoint = buildEndpoint(selectedStrategies, dteMin, dteMax, minIvRank, relaxed);
-  const { data, loading, error, refetch } = useApi(endpoint, { timeout: 180_000 });
+  const { data, loading, error, refetch } = useApi(endpoint, { timeout: 300_000 });
+  useRefreshPolling(data, error, endpoint, refetch);
 
   useEffect(() => {
     if (data?.data) {
@@ -157,8 +159,9 @@ function AdvancedScanner() {
   const handleDteMin = (v) => { setDteMin(v); setLastGoodOptions([]); };
   const handleDteMax = (v) => { setDteMax(v); setLastGoodOptions([]); };
 
-  const isInitialLoad = loading && lastGoodOptions.length === 0;
-  const isRefreshing  = loading && lastGoodOptions.length > 0;
+  const scanBusy = loading || (!!data?.refreshing && !error);
+  const isInitialLoad = scanBusy && lastGoodOptions.length === 0;
+  const isRefreshing  = scanBusy && lastGoodOptions.length > 0;
   const rawOptions = data?.data || lastGoodOptions;
   const displayOptions = hideEarningsRisk
     ? rawOptions.filter(o => !o.earningsRisk)
@@ -278,16 +281,16 @@ function AdvancedScanner() {
 
         <button
           onClick={handleRefresh}
-          disabled={loading}
+          disabled={scanBusy}
           style={{
             marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.4rem',
             background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
             color: 'var(--text-primary)', padding: '0.4rem 1rem', borderRadius: '8px',
-            cursor: loading ? 'not-allowed' : 'pointer', fontSize: '0.82rem', transition: 'all 0.2s',
+            cursor: scanBusy ? 'not-allowed' : 'pointer', fontSize: '0.82rem', transition: 'all 0.2s',
           }}
         >
-          <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-          {loading ? '扫描中…' : '刷新数据'}
+          <RefreshCw size={14} style={{ animation: scanBusy ? 'spin 1s linear infinite' : 'none' }} />
+          {scanBusy ? '扫描中…' : '刷新数据'}
         </button>
       </div>
 
@@ -383,7 +386,7 @@ function AdvancedScanner() {
       )}
 
       {/* 缓存提示 */}
-      {!loading && !error && data?.cached && (
+      {!loading && !error && data?.cached && !data.refreshing && (
         <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
           📦 数据来自缓存（1 小时内有效）· 点击「刷新数据」重新扫描
         </p>
@@ -404,7 +407,7 @@ function AdvancedScanner() {
 
       {/* 卡片列表（始终保留，刷新时不消失） */}
       {!isInitialLoad && (
-        displayOptions.length === 0 && !loading && !error ? (
+        displayOptions.length === 0 && !scanBusy && !error ? (
           <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
             <h3>暂无符合条件的期权</h3>
             {hideEarningsRisk && hiddenEarningsCount > 0 ? (
