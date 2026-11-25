@@ -13,7 +13,7 @@ import requests
 import yfinance as yf
 from fastapi import APIRouter, HTTPException, Query
 
-from services import cache as cache_svc, cboe
+from services import cache as cache_svc, chains
 from services.scanner import scan_options, _calc_empirical_win_rate
 from services.greeks import calc_black_scholes
 
@@ -332,10 +332,10 @@ def simulate_roll(
     平仓成本 (Buy To Close) 取当前持仓 put 的真实市价（bid/ask 中间价），
     再在比当前 DTE 多 20~60 天的远期里，找能覆盖该成本、行权价更低的新 put。
     """
-    data = cboe.fetch(symbol)
-    chains = (data or {}).get("chains")
-    if not chains:
-        return {"status": "error", "message": "无法获取期权链数据（CBOE 暂不可用）。"}
+    data, _ = chains.fetch(symbol, max(0, dte - 7), dte + 60, 8)
+    chain_map = (data or {}).get("chains")
+    if not chain_map:
+        return {"status": "error", "message": "无法获取期权链数据（数据源暂不可用）。"}
 
     today = datetime.now()
 
@@ -354,14 +354,14 @@ def simulate_roll(
         return df.loc[(df["strike"] - target).abs().idxmin()]
 
     # 平仓成本 = 当前这张 put 的实时市价（找最接近持仓到期日的那条链）
-    cur_exp = min(chains, key=lambda e: abs(_exp_dte(e) - dte))
-    cur_row = _nearest_strike(chains[cur_exp]["puts"], strike)
+    cur_exp = min(chain_map, key=lambda e: abs(_exp_dte(e) - dte))
+    cur_row = _nearest_strike(chain_map[cur_exp]["puts"], strike)
     btc_cost = _mid(cur_row) if cur_row is not None else strike * 0.02
 
     target_premium = btc_cost + premium * 0.2  # 滚后还想多赚 20% 原权利金
 
     best_roll = None
-    for exp, slot in chains.items():
+    for exp, slot in chain_map.items():
         roll_dte = _exp_dte(exp)
         if not (dte + 20 <= roll_dte <= dte + 60):
             continue

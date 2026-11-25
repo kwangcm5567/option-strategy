@@ -36,7 +36,7 @@ function ScannerLoading() {
     return () => { clearInterval(t1); clearInterval(t2); };
   }, []);
 
-  const pct = Math.min(Math.round((elapsed / 150) * 100), 95);
+  const pct = Math.min(Math.round((elapsed / 270) * 100), 95);
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
   const timeStr = mins > 0 ? `${mins} 分 ${secs} 秒` : `${secs} 秒`;
@@ -51,7 +51,7 @@ function ScannerLoading() {
           正在扫描全市场期权…
         </p>
         <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-          首次扫描约需 <strong style={{ color: '#f59e0b' }}>1–3 分钟</strong>，之后 1 小时内直接读缓存（秒开）
+          首次扫描约需 <strong style={{ color: '#f59e0b' }}>3–5 分钟</strong>，之后 1 小时内直接读缓存（秒开）
         </p>
       </div>
       <div style={{ width: '100%', maxWidth: 420 }}>
@@ -381,7 +381,7 @@ function AdvancedScanner() {
       {/* 数据源标注 */}
       {!loading && !error && data?.source && rawOptions.length > 0 && (
         <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-          数据源：{{ tiger: 'Tiger 老虎证券', cboe: 'CBOE（延迟约15分钟）', yfinance: 'Yahoo Finance' }[data.source] || data.source}
+          数据源：{{ tradier: 'Tradier（延迟约15分钟）', cboe: 'CBOE（延迟约15分钟）', yfinance: 'Yahoo Finance' }[data.source] || data.source}
         </p>
       )}
 

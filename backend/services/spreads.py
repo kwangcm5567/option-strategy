@@ -11,7 +11,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from . import cboe
+from . import chains, tradier
 from .greeks import calc_black_scholes
 from .scanner import TICKERS
 
@@ -224,26 +224,27 @@ def _score_spread(s: dict) -> float:
 
 # ─── 单标的价差构建 ──────────────────────────────────────────────────────────
 
-def _build_for_ticker(symbol: str, strategy: str, dte_min: int, dte_max: int) -> list[dict]:
+def _build_for_ticker(symbol: str, strategy: str, dte_min: int, dte_max: int) -> list[dict] | None:
+    """返回 None 表示取不到期权链。"""
     try:
-        data = cboe.fetch(symbol)
+        data, _ = chains.fetch(symbol, dte_min, dte_max, 3)
         if not data:
-            return []
+            return None
         spot = data.get("current_price")
-        chains = data.get("chains") or {}
-        if not spot or not chains:
-            return []
+        chain_map = data.get("chains") or {}
+        if not spot or not chain_map:
+            return None
 
         today = datetime.now()
-        valid = [(e, (datetime.strptime(e, "%Y-%m-%d") - today).days) for e in sorted(chains.keys())]
+        valid = [(e, (datetime.strptime(e, "%Y-%m-%d") - today).days) for e in sorted(chain_map.keys())]
         valid = [(e, d) for e, d in valid if dte_min <= d <= dte_max]
         if len(valid) > 3:
             valid = [valid[0], valid[len(valid) // 2], valid[-1]]
 
         out = []
         for exp, dte in valid:
-            calls = _clean(chains[exp]["calls"])
-            puts = _clean(chains[exp]["puts"])
+            calls = _clean(chain_map[exp]["calls"])
+            puts = _clean(chain_map[exp]["puts"])
 
             if strategy in ("bull_put", "iron_condor"):
                 out.extend(_scan_credit_verticals(puts, spot, dte, "bull_put", exp))
@@ -267,7 +268,7 @@ def _build_for_ticker(symbol: str, strategy: str, dte_min: int, dte_max: int) ->
         return out
     except Exception as e:
         logger.warning("[spreads] %s 错误: %s", symbol, e)
-        return []
+        return None
 
 
 def _scan_credit_verticals(df: pd.DataFrame, spot: float, dte: int, kind: str, exp: str) -> list[dict]:
@@ -352,14 +353,21 @@ def scan_spreads(strategy: str = "bull_put", dte_min: int = 20, dte_max: int = 5
     if strategy not in _SPREAD_STRATEGIES:
         strategy = "bull_put"
 
+    tradier.prefetch_quotes(list(TICKERS))
     results: list[dict] = []
+    tickers_with_data = 0
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
             pool.submit(_build_for_ticker, sym, strategy, dte_min, dte_max): sym
             for sym in TICKERS
         }
         for fut in as_completed(futures):
-            results.extend(fut.result())
+            rows = fut.result()
+            if rows is not None:
+                tickers_with_data += 1
+                results.extend(rows)
+    if tickers_with_data == 0:
+        raise chains.DataSourceUnavailable(chains.UNAVAILABLE_MSG)
 
     results.sort(key=lambda x: x["score"], reverse=True)
 

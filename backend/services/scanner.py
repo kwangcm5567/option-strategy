@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from . import cboe
+from . import cboe, chains, tradier
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
 from .simple import SIMPLE_TICKERS, evaluate_put
 
@@ -728,7 +728,8 @@ def _process_ticker(
     profile: str = "advanced",
     fee_per_contract: float = 0.65,
     slippage_per_share: float = 0.01,
-) -> list[dict]:
+) -> list[dict] | None:
+    """返回 None 表示该标的取不到数据（区别于有数据但无合约通过筛选）。"""
     try:
         ticker = yf.Ticker(symbol)
         # 历史日线优先 CBOE（不封机房 IP、无配额），yfinance 仅兜底
@@ -736,7 +737,7 @@ def _process_ticker(
         if history.empty:
             history = ticker.history(period="1y")
         if history.empty:
-            return []
+            return None
 
         current_price = float(history["Close"].iloc[-1])
         daily_ret = history["Close"].pct_change().dropna()
@@ -763,15 +764,17 @@ def _process_ticker(
 
         gap_risk_count = int((daily_ret < -0.05).sum())
 
-        # 期权链数据源：CBOE（免费、不封 IP）→ yfinance 兜底
-        src_data = cboe.fetch(symbol)
-        source = "cboe" if src_data else "yfinance"
+        # 期权链数据源：Tradier → CBOE → yfinance 兜底
+        src_data, source = chains.fetch(symbol, dte_min, dte_max, 4)
+        source = source or "yfinance"
 
         underlying_change_pct = src_data["change_pct"] if src_data else None
         if src_data and src_data.get("current_price"):
             current_price = src_data["current_price"]
 
         exp_dates = sorted(src_data["chains"].keys()) if src_data else ticker.options
+        if not exp_dates:
+            return None
 
         valid_dates = []
         for date_str in exp_dates:
@@ -838,7 +841,7 @@ def _process_ticker(
 
     except Exception as e:
         logger.warning("[scanner] %s 错误: %s", symbol, e)
-        return []
+        return None
 
 
 # ─── 主扫描函数 ───────────────────────────────────────────────────────────────
@@ -869,7 +872,10 @@ def scan_options(
     needs_down = not simple and any(s in strategies for s in ("sell_put", "buy_put"))
     needs_up = not simple and any(s in strategies for s in ("buy_call", "sell_call"))
 
+    tickers = SIMPLE_TICKERS if simple else TICKERS
+    tradier.prefetch_quotes(list(tickers))
     results: list[dict] = []
+    tickers_with_data = 0
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
@@ -878,10 +884,15 @@ def scan_options(
                 earnings_map, dividend_map, needs_down, needs_up, relaxed, best_effort,
                 profile, fee_per_contract, slippage_per_share,
             ): sym
-            for sym in (SIMPLE_TICKERS if simple else TICKERS)
+            for sym in tickers
         }
         for fut in as_completed(futures):
-            results.extend(fut.result())
+            rows = fut.result()
+            if rows is not None:
+                tickers_with_data += 1
+                results.extend(rows)
+    if tickers_with_data == 0:
+        raise chains.DataSourceUnavailable(chains.UNAVAILABLE_MSG)
 
     if min_iv_rank > 0:
         results = [r for r in results if (r.get("ivRank") or 0) >= min_iv_rank]

@@ -23,7 +23,7 @@ function Results({ endpoint }) {
           <RefreshCw size={14} /> {busy ? '扫描中…' : '刷新报价'}
         </button>
       </div>
-      {scanningCold && <p role="status" className="simple-notice">正在检查 3 只 ETF 的报价与成本，首次扫描约需 1–3 分钟，完成后自动显示…</p>}
+      {scanningCold && <p role="status" className="simple-notice">正在检查 3 只 ETF 的报价与成本，首次扫描约需 1–2 分钟，完成后自动显示…</p>}
       {!scanningCold && busy && <p role="status" className="simple-notice">正在后台刷新报价，先显示上次结果，完成后自动更新…</p>}
       {error && <p role="alert" className="simple-notice">扫描失败：{error}。请重试，当前没有可用结果。</p>}
       {!busy && !error && data && (
@@ -58,7 +58,7 @@ function Results({ endpoint }) {
                       <p>若买回价降至 {dollars(option.closeTarget)}，扣除预留成本后利润约 {dollars(option.targetNetProfit)}。这是约半数权利金的退出参考，未验证为最优规则。</p>
                       <p>到期前检查是否平仓或准备接股；滚仓会实现旧仓盈亏并开启新风险，不能消除损失。</p>
                     </details>
-                    <footer>数据源 {option.source === 'cboe' ? 'CBOE（延迟）' : 'Yahoo Finance'} · 下单前核对券商报价</footer>
+                    <footer>数据源 {{ tradier: 'Tradier（延迟）', cboe: 'CBOE（延迟）' }[option.source] || 'Yahoo Finance'} · 下单前核对券商报价</footer>
                   </article>
                 ))}
               </div>

@@ -1,9 +1,10 @@
 """
 /api/scan-spreads — 多腿价差扫描（垂直价差 / Iron Condor / 跨式）。
 """
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from services import spreads
+from services.chains import DataSourceUnavailable
 from services import cache as cache_svc
 
 router = APIRouter()
@@ -20,6 +21,9 @@ def scan_spreads(
     if cached is not None:
         return {"strategy": strategy, "results": cached, "cached": True}
 
-    results = spreads.scan_spreads(strategy, dte_min, dte_max)
+    try:
+        results = spreads.scan_spreads(strategy, dte_min, dte_max)
+    except DataSourceUnavailable as e:
+        raise HTTPException(502, str(e))
     cache_svc.set(cache_key, results)
     return {"strategy": strategy, "results": results, "cached": False}
