@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from . import cboe, chains, tradier
+from . import cboe, chains
 from .greeks import calc_black_scholes, calc_iv_rank, calc_expected_move, calc_p50
 from .simple import SIMPLE_TICKERS, evaluate_put
 
@@ -873,7 +873,7 @@ def scan_options(
     needs_up = not simple and any(s in strategies for s in ("buy_call", "sell_call"))
 
     tickers = SIMPLE_TICKERS if simple else TICKERS
-    tradier.prefetch_quotes(list(tickers))
+    chains.prefetch_quotes(list(tickers))
     results: list[dict] = []
     tickers_with_data = 0
     with ThreadPoolExecutor(max_workers=8) as pool:

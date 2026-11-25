@@ -58,7 +58,7 @@ function Results({ endpoint }) {
                       <p>若买回价降至 {dollars(option.closeTarget)}，扣除预留成本后利润约 {dollars(option.targetNetProfit)}。这是约半数权利金的退出参考，未验证为最优规则。</p>
                       <p>到期前检查是否平仓或准备接股；滚仓会实现旧仓盈亏并开启新风险，不能消除损失。</p>
                     </details>
-                    <footer>数据源 {{ tradier: 'Tradier（延迟）', cboe: 'CBOE（延迟）' }[option.source] || 'Yahoo Finance'} · 下单前核对券商报价</footer>
+                    <footer>数据源 {{ alpaca: 'Alpaca', tradier: 'Tradier（延迟）', cboe: 'CBOE（延迟）' }[option.source] || 'Yahoo Finance'} · 下单前核对券商报价</footer>
                   </article>
                 ))}
               </div>

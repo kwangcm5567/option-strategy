@@ -11,7 +11,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from . import chains, tradier
+from . import chains
 from .greeks import calc_black_scholes
 from .scanner import TICKERS
 
@@ -353,7 +353,7 @@ def scan_spreads(strategy: str = "bull_put", dte_min: int = 20, dte_max: int = 5
     if strategy not in _SPREAD_STRATEGIES:
         strategy = "bull_put"
 
-    tradier.prefetch_quotes(list(TICKERS))
+    chains.prefetch_quotes(list(TICKERS))
     results: list[dict] = []
     tickers_with_data = 0
     with ThreadPoolExecutor(max_workers=6) as pool:

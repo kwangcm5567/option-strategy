@@ -10,6 +10,8 @@ from services import chains, scanner, spreads, tradier
 
 @pytest.fixture
 def api(monkeypatch):
+    for k in ("ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY", "APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):
+        monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("TRADIER_TOKEN", "test")
     for name in ("_exp_cache", "_chain_cache", "_quote_cache"):
         monkeypatch.setattr(tradier, name, {})
@@ -61,7 +63,8 @@ def test_expirations_and_chains_are_cached(api):
 
 
 def test_without_token_tradier_is_skipped(monkeypatch):
-    monkeypatch.delenv("TRADIER_TOKEN", raising=False)
+    for k in ("TRADIER_TOKEN", "ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY", "APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):
+        monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(tradier, "_get", Mock(side_effect=AssertionError("no request")))
     monkeypatch.setattr(chains.cboe, "fetch", lambda _: None)
     assert chains.fetch("SPY", 7, 60, 4) == (None, None)
